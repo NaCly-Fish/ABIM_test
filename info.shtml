@@ -2693,7 +2693,7 @@ if($confirm_num == 5 ){
         $items_num = $fcc->f('t');
       }
 
-
+      $fcc->query("update x_project_develop_items set progress = 100 where status = 1");        //R
     //分解功能显示
     $fcc->query("select * from x_project_develop_items where develop_id = $develop_id order by expect_time ");
     $i = 0;
@@ -2715,7 +2715,7 @@ if($confirm_num == 5 ){
       }else if($fcc->f('status') == 1){
         $items_status  = '<span class="colorGreen">已完成</span>(完成时间：'.$final_time.')';
 
-        $fcc->query("UPDATE x_project_develop_items SET progress = 100");        //R
+        
 
         $final_work_num = $final_work_num + $fcc->f('weight');
       }
