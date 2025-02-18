@@ -2714,6 +2714,9 @@ if($confirm_num == 5 ){
         $items_status  = '<span class="colorRed">未完成</span>';
       }else if($fcc->f('status') == 1){
         $items_status  = '<span class="colorGreen">已完成</span>(完成时间：'.$final_time.')';
+
+        $fcc->query("UPDATE x_project_develop_items SET progress = 100");        //R
+
         $final_work_num = $final_work_num + $fcc->f('weight');
       }
 
