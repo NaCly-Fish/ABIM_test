@@ -1,0 +1,3036 @@
+<?php
+include_once 'setting/miniapp.shtml';
+/*
+  ngproject/acceptance  验收管理
+*/
+
+  // 获取员工英文姓名数组
+  $UserNameArr = array();
+  $fcc->query("SELECT uid,cn_name,en_name FROM common_user_profile"); 
+  while($fcc->next_record()){
+    $UserNameArr[$fcc->f('uid')] = $fcc->f('en_name') ? $fcc->f('en_name') : $fcc->f('cn_name');
+  }
+
+
+/* XMLHTTP */
+        if(isset($_GET{'xmlhttp'}) && $_GET{'xmlhttp'} == 1 && isset($_GET{'xmlact'})){
+                  $msgArr = array(
+                    'error'=>1,
+                      'errmsg'=>'未知错误',
+                    );
+
+  //更改状态，提交审批
+  if($_GET{'xmlact'} == 'edit_status'){
+    $msgArr = array(
+    'error'=>0,
+    'errmsg'=>'状态更改成功',
+  );
+
+  $var_arr = array(
+    'str_var' => array('final_time','remarks','reason','expect_time'),
+    'digi_var' => array('develop_id','project_id','choose_status','choose_reason','is_test'),
+    'time_var' => array(),
+  );
+
+  $mcc->getFormData($var_arr);
+
+    $header_id_array = array();
+  //开发完成
+  if($choose_status == 1){
+    //当前测试是否完成
+    $fcc->query("SELECT header_id from x_project_develop_items  where  develop_id = $develop_id");
+    while($fcc->next_record()){
+      if($fcc->f('header_id')){
+        $header_id_array[] = $fcc->f('header_id'); //将所有的header_id存入数组中
+      }
+    }
+
+
+    $header_no_final_num = 0; //测试中未完成的个数
+    if($header_id_array[0]){
+      //判断各个header中是否存在未完成的测试
+      for($i = 0;$i < count($header_id_array);$i++){
+        $fcc->query("SELECT header_id,test_status,t_uuid from x_project_test_unit where  header_id = $header_id_array[$i]");
+        while($fcc->next_record()){
+          if($fcc->f('test_status') == 5 || $fcc->f('test_status') == 1){
+            $header_no_final_num++;
+          }
+        }
+      }
+    }
+
+
+    //未完成分解工作是否存在
+    $items_final = 0;
+    $fcc->query("select * from x_project_develop_items where develop_id = $develop_id");
+    while($fcc->next_record()){
+      if($fcc->f('status') == 0){
+        $items_final++;
+      }
+    }
+
+
+
+    $project_task_num = 0; //未完成问题反馈数量
+
+    //检测当前开发存在多少分解工作有测试记录header_id
+    $HeaderIdStr = '-1';
+    $i = 0;
+    $fcc->query("select * from x_project_develop_items where develop_id = $develop_id");
+    while($fcc->next_record()){
+      if($fcc->f('header_id') != ''){
+        if($i == 0){
+          $HeaderIdStr = $fcc->f('header_id');
+        }else{
+          $HeaderIdStr .= ','.$fcc->f('header_id');
+        }
+        $i++;
+      }
+    }
+
+
+    //检测这些测试的unit_id
+    $UnitIdStr = '-1';
+    $i = 0;
+    $fcc->query("select * from x_project_test_unit where header_id in ($HeaderIdStr)");
+    while($fcc->next_record()){
+      if($i == 0){
+        $UnitIdStr = $fcc->f('unit_id');
+      }else{
+        $UnitIdStr .= ','.$fcc->f('unit_id');
+      }
+      $i++;
+    }
+
+
+
+
+    //检测是否存在问题反馈未完成
+    $fcc->query("select * from x_project_task where status != 4 and status != 3 and unit_id in($UnitIdStr) and problem_type = 1");
+    if($fcc->next_record()){
+      $project_task_num = 1;
+    }
+
+    if($is_test == 1){
+      if(!$header_id_array[0] || $header_no_final_num != 0  || $items_final != 0  || $project_task_num == 1){
+        $mcc->jsonError("错误：验收条件未全部达成<br>需要检查以下两条：<br>1、测试至少添加一条并完成所有问题反馈<br>2、分解工作是否全部处理完成");
+      }
+    }else{
+      if($items_final != 0){
+        $mcc->jsonError("错误：分解工作未全部处理完成无法完成");
+      }
+    }
+
+
+    if(!$final_time){
+      $mcc->jsonError('错误：请输入完成时间');
+    }
+
+    $status = 3;
+    $fieldArr = array('status','final_time');
+    $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+    $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+    //个人参与工作自动完成
+    $is_final = 1;
+    $fieldArr = array('is_final');
+    $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+    $fcc->query("UPDATE x_project_develop_otherwork SET $updateStr WHERE other_uuid = '$_tplThisUuid'");
+
+    //记录日志
+    $remarks =  $UserNameArr[$_tplThisUuid].'完成了该项开发,开始内部验收，实际完成时间：'.$final_time;
+    $operate_uuid = $_tplThisUuid;
+    $operate_time = time();
+    $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+    list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+    $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+
+    //存入内部验收表中
+    $status = 1;
+    $submit_time = time();
+    $start_time = $final_time;
+    $fieldArr = array('project_id','submit_time','develop_id','status','start_time');
+    list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+    $fcc->query("INSERT INTO x_project_interior_acceptance($fieldStr) VALUES($valueStr)");
+    $interior_acceptance_id = $fcc->insert_id();
+
+    //记录日志
+    $remarks = $UserNameArr[$_tplThisUuid].'提交了当前内部验收';
+    $operate_uuid = $_tplThisUuid;
+    $operate_time = time();
+    $fieldArr = array('interior_acceptance_id','remarks','operate_time','operate_uuid');
+    list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+    $fcc->query("INSERT INTO x_project_interior_acceptance_news($fieldStr) VALUES($valueStr)");
+
+    //更新消息通知状态
+    $note_final_time = time();
+    $fcc->query("update info_note set news_type = 2,checked = 1,final_time = $note_final_time where link_id = $develop_id and func_name = 'develop' and news_type = 1");
+
+  }
+  //暂缓开发
+  else if($choose_status == 2){
+
+    if(!$remarks){
+      $mcc->jsonError('错误：备注信息不可为空');
+    }
+
+    $fcc->query("select important from x_project_develop where develop_id = $develop_id");
+    if($fcc->next_record()){
+      $important = $fcc->f('important');
+    }
+
+    //更新消息通知状态
+    $note_final_time = time();
+    $fcc->query("update info_note set news_type = 2,checked = 1,final_time = $note_final_time where link_id = $develop_id and func_name = 'develop' and news_type = 1");
+
+    if($important < 3 || $_tplThisUuid == 51){
+      //更新消息通知状态
+      $note_final_time = time();
+      $fcc->query("update info_note set news_type = 2,checked = 1,final_time = $note_final_time where link_id = $develop_id and func_name = 'develop' and news_type = 1");
+
+        $status = 14;
+        $fieldArr = array('status');
+        $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+        $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+        //记录日志
+        $remarks =  $UserNameArr[$_tplThisUuid].'将该项开发状态更新为“暂缓”，备注：'.$remarks;
+        $operate_uuid = $_tplThisUuid;
+        $operate_time = time();
+        $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+        list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+        $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+    }else{
+        $status = 10;
+        $confirm_num = 5;
+        $fieldArr = array('status','confirm_num');
+        $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+        $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+
+      //发出通知
+      $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+      if($fcc->next_record()){
+        $project_name = $fcc->f('project_name');
+      }
+
+      $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+      $submit_uuid = $_tplThisUuid;
+      $status = 6;
+      $memo_theme = '开发申请通知';
+      $memo_content =  $UserNameArr{$charge_uuid}.'想将项目“'.$project_name.'”中一项开发的状态调整为：暂缓，请查看并进行审批';
+      $time = date('Y-m-d H:i:s');
+      $submit_time = time();
+      $memo_time = time();
+      $uid = 51;
+//      $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//      $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+      $memo_id = $fcc->insert_id();
+      $note_type = 2;
+      $sender_uid = $_tplThisUuid;
+      $receiver_uid = $uid;
+      $subject = $memo_theme;
+      $content = $memo_content;
+      $submit_time = time();
+      $news_type = 1;
+      $link_id = $develop_id;
+      $relate_project = 1;
+      $func_name = 'develop';
+      $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+      $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','project_id','link_id','link_href','relate_project','news_type','func_name');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+        //记录日志
+        $remarks =  $UserNameArr[$_tplThisUuid].'提交了暂缓开发审批，备注：'.$remarks;
+        $operate_uuid = $_tplThisUuid;
+        $operate_time = time();
+        $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+        list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+        $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+    }
+
+  }
+  //取消开发
+  else if($choose_status == 3){
+    if($choose_reason == 0){
+      $mcc->jsonError('错误：请选择取消原因');
+    }
+
+    if(!$remarks){
+      $mcc->jsonError('错误：备注信息不可为空');
+    }
+
+    if($choose_reason == 1){
+      $close_reason = '合同取消';
+    }else if($choose_reason == 2){
+      $close_reason = '技术原因';
+    }else if($choose_reason == 3){
+      if(!$reason){
+        $mcc->jsonError('错误：选择其他原因，请填写原因');
+      }
+        $close_reason = $reason;
+    }
+
+    $fcc->query("select important from x_project_develop where develop_id = $develop_id");
+    if($fcc->next_record()){
+      $important = $fcc->f('important');
+    }
+    //更新消息通知状态
+    $note_final_time = time();
+    $fcc->query("update info_note set news_type = 2,checked = 1,final_time = $note_final_time where link_id = $develop_id and func_name = 'develop' and news_type = 1");
+
+
+    if($important < 3 || $_tplThisUuid == 51){
+      //更新消息通知状态
+      $note_final_time = time();
+      $fcc->query("update info_note set news_type = 2,checked = 1,final_time = $note_final_time where link_id = $develop_id and func_name = 'develop' and news_type = 1");
+
+      $status = 15;
+      $fieldArr = array('status','close_reason');
+      $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+      $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+      //记录日志
+      $remarks =  $UserNameArr[$_tplThisUuid].'取消了该项开发，原因：“'.$close_reason.'”备注：'.$remarks;
+      $operate_uuid = $_tplThisUuid;
+      $operate_time = time();
+      $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+    }else{
+      $status = 9;
+      $confirm_num = 5;
+      $fieldArr = array('status','close_reason','confirm_num');
+      $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+      $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+
+      //发出通知
+      $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+      if($fcc->next_record()){
+        $project_name = $fcc->f('project_name');
+      }
+
+      $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+      $submit_uuid = $_tplThisUuid;
+      $status = 6;
+      $memo_theme = '开发申请通知';
+      $memo_content =  $UserNameArr{$charge_uuid}.'想取消项目“'.$project_name.'”中一项开发，请查看并进行审批';
+      $time = date('Y-m-d H:i:s');
+      $submit_time = time();
+      $memo_time = time();
+      $uid = 51;
+//      $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//      $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+      $memo_id = $fcc->insert_id();
+      $note_type = 2;
+      $sender_uid = $_tplThisUuid;
+      $receiver_uid = $uid;
+      $subject = $memo_theme;
+      $content = $memo_content;
+      $submit_time = time();
+      $news_type = 1;
+      $link_id = $develop_id;
+      $relate_project = 1;
+      $func_name = 'develop';
+      $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+      $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','project_id','link_id','link_href','relate_project','news_type','func_name');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+      //记录日志
+      $remarks =  $UserNameArr[$_tplThisUuid].'提交了取消开发审批，原因：“'.$close_reason.'”备注：'.$remarks;
+      $operate_uuid = $_tplThisUuid;
+      $operate_time = time();
+      $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+    }
+  }
+
+
+
+    if($develop_id){
+        $msgArr{'errmsg'} = '状态更改成功';
+      }else{
+        $msgArr{'errmsg'} = '发生异常错误';
+      }
+
+    }
+
+
+        //更改负责人
+        else if($_GET{'xmlact'} == 'edit_charge'){
+
+        $msgArr = array(
+        'error'=>0,
+        'errmsg'=>'更改成功',
+        );
+
+        $var_arr = array(
+        'str_var' => array(),
+        'digi_var' => array('develop_id','charge_uuid','project_id'),
+        'time_var' => array(),
+        );
+        $mcc->getFormData($var_arr);
+
+          //更新消息通知状态
+          $note_final_time = time();
+          $fcc->query("update info_note set news_type = 2,checked = 1,final_time = $note_final_time where link_id = $develop_id and func_name = 'develop' and news_type = 1");
+
+
+          $fcc->query("select charge_uuid,status from x_project_develop where develop_id = $develop_id");
+          if($fcc->next_record()){
+            $old_charge_uuid = $fcc->f('charge_uuid');
+            $old_status = $fcc->f('status');
+          }
+
+        $uid = $charge_uuid;
+        $fieldArr = array('charge_uuid');
+        $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+        $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+          //查询分解工作，并调整分解负责人
+          $ItemStr = '';
+          $fcc->query("select * from x_project_develop_items where work_uuid = $old_charge_uuid  and develop_id = $develop_id and status = 0");
+          while($fcc->next_record()){
+            if($ItemStr){
+              $ItemStr .= ','.$fcc->f('items_id');
+            }else{
+              $ItemStr = $fcc->f('items_id');
+            }
+          }
+
+          //修改负责人
+          if($ItemStr){
+            $fcc->query("update x_project_develop_items set work_uuid = $charge_uuid where items_id in ($ItemStr)");
+          }
+
+        //记录日志
+        $remarks =  $UserNameArr[$_tplThisUuid].'将该开发的主要负责人更改为：'.$UserNameArr{$charge_uuid};
+        $operate_uuid = $_tplThisUuid;
+        $operate_time = time();
+        $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+        list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+        $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+        $news_id = $fcc->insert_id();
+
+
+
+          //发送待办
+          $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+          if($fcc->next_record()){
+            $project_name = $fcc->f('project_name');
+          }
+
+          //状态正常的发送待办
+          if($old_status == 1 || $old_status == 2 || $old_status == 8){
+            $note_type = 2;
+            $sender_uid = $_tplThisUuid;
+            $receiver_uid = $charge_uuid;
+            $subject = '开发负责人变更通知';
+            $content = '项目“'.$project_name.'”中的一条开发负责人变更为您，请快去查看并处理';
+            $submit_time = time();
+            $news_type = 1;
+            $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+            $relate_project = 1;
+            $link_id = $develop_id;
+            $func_name = 'develop';
+            $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project','func_name','project_id','link_id');
+            list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+            $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+          }
+
+
+          if($news_id){
+            $msgArr{'errmsg'} = '更改成功';
+          }else{
+            $msgArr{'errmsg'} = '发生异常错误';
+          }
+    }
+
+
+      //更改分解工作的预计完成时间
+      else if($_GET{'xmlact'} == 'items_edit_time'){
+
+      $msgArr = array(
+        'error'=>0,
+        'errmsg'=>'更改成功',
+      );
+
+      $var_arr = array(
+      'str_var' => array('expect_time','remarks'),
+      'digi_var' => array('develop_id','items_id','project_id'),
+      'time_var' => array(),
+      );
+      $mcc->getFormData($var_arr);
+
+
+      $fcc->query("select * from x_project_develop_items where items_id = $items_id");
+      if($fcc->next_record()){
+        $old_expect_time = $fcc->f('expect_time');
+        $items_name = $fcc->f('items_name');
+      }
+
+      $fieldArr = array('expect_time');
+      $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+      $fcc->query("UPDATE x_project_develop_items SET $updateStr WHERE items_id = '$items_id'");
+
+      if(!$remarks){
+        $remarks = '无';
+      }
+
+      //记录日志
+      $remarks =  $UserNameArr[$_tplThisUuid].'将分解工作“'.$items_name.'”的预计完成时间由“'.$old_expect_time.'”调整为“'.$expect_time.'”<br>备注：'.$remarks;
+      $operate_uuid = $_tplThisUuid;
+      $operate_time = time();
+      $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+
+      //查看预计完成时间，如果小于设置的延期时间，则总的预计完成时间延期
+      $fcc->query("select expect_time,status  from x_project_develop where develop_id = $develop_id");
+      if($fcc->next_record()){
+        $develop_expect_time = strtotime($fcc->f('expect_time'));
+        $status = $fcc->f('status');
+      }
+
+      if($develop_expect_time < strtotime($expect_time)){
+        if(strtotime($expect_time) < strtotime(date('Y-m-d',time()))){
+          $status = 8;
+        }else if($status == 8){
+          $status = 2;
+        }
+        $fieldArr = array('expect_time','status');
+        $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+        $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+      }
+
+        if( $items_id){
+          $msgArr{'errmsg'} = '更改成功';
+        }else{
+          $msgArr{'errmsg'} = '发生异常错误';
+        }
+      }
+
+      //添加分解工作
+      else if($_GET{'xmlact'} == 'add_items'){
+      $msgArr = array(
+      'error'=>0,
+      'errmsg'=>'添加成功',
+      );
+
+      $var_arr = array(
+      'str_var' => array('items_name_array','expect_time_array'),
+      'digi_var' => array('develop_id','work_uuid_array','important_array','urgent_array','weight_array','project_id'),
+      'time_var' => array(),
+      );
+      $mcc->getFormData($var_arr);
+
+      $fcc->query("select * from x_project_develop where develop_id = $develop_id");
+      if($fcc->next_record()){
+        if(strlen($fcc->f('function_theme')) > 18){
+          $function_theme = substr($fcc->f('function_theme'),0,18).'…';
+        }else{
+          $function_theme = $fcc->f('function_theme');
+        }
+      }
+
+      //项目名称
+      $_tplNameArr = $fcc->getProjectShortNameArr();
+      $_tplallNameArr = $fcc->getProjectNameArr();
+      if($_tplNameArr{$project_id}){
+        $project_name = substr($_tplNameArr{$project_id},0,18);
+      }else{
+        $project_name = substr($_tplallNameArr{$project_id},0,18);
+      }
+
+      for($i = 0;$i < count($items_name_array);$i++){
+        if($items_name_array[$i] != ''){
+          if($expect_time_array[$i] == ''){
+            $mcc->jsonError('错误：分解工作名称对应的预计完成时间不可为空');
+          }
+        }
+
+        if($expect_time_array[$i] != ''){
+          if($items_name_array[$i] == ''){
+            $mcc->jsonError('错误：预计完成时间对应的分解工作名称不可为空');
+          }
+        }
+      }
+
+      $submit_time = time();
+      $items_charge_uuid = array(); //分解工作负责人
+      $k = 0;
+      for($i = 0;$i < count($items_name_array);$i++){
+        if($items_name_array[$i] != ''){
+          $items_name = $items_name_array[$i];
+          $work_uuid = $work_uuid_array[$i];
+          $expect_time = $expect_time_array[$i];
+          $important = $important_array[$i];
+          $urgent = $urgent_array[$i];
+          $status = 0;
+
+          if(!in_array($work_uuid,$items_charge_uuid)){
+            $items_charge_uuid[$k] = $work_uuid;
+            $k++;
+          }
+
+          if($weight_array[$i]){
+            $weight = $weight_array[$i];
+          }else{
+            if((strtotime($expect_time) - strtotime(date('Y-m-d',time())))/86400 > 0){
+              $weight = (strtotime($expect_time) - strtotime(date('Y-m-d',time())))/86400;
+            }else{
+              $weight = 1;
+            }
+          }
+
+          $fieldArr = array('project_id','develop_id','items_name','status','important','urgent','expect_time','weight','work_uuid');
+          list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+          $fcc->query("INSERT INTO x_project_develop_items($fieldStr) VALUES($valueStr)");
+
+          //记录日志
+          $remarks =  '添加了一条工作名称为“'.$items_name.'”的分解工作项';
+          $operate_uuid = $_tplThisUuid;
+          $operate_time = time();
+          $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+          list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+            $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+        }
+      }
+
+        for($i = 0;$i < count($items_charge_uuid);$i++){
+          //订阅消息通知
+          $weixin_remarks = '开发项功能名称"'.$function_theme.'"';
+          $today_date = date('Y-m-d',time());
+          $dataArr = array(
+            'thing1' => array('value' => '"'.$project_name.'"中存在分解工作待处理 '),
+            'thing2' => array('value' => $UserNameArr{$items_charge_uuid[$i]}),
+            'thing5' => array('value' => $weixin_remarks),
+            'time14' => array('value' => $today_date),
+            'thing15' => array('value' => '开发'),
+          );
+          // var_dump($dataArr);
+         $fcc->sendWxSubscribeMsg($items_charge_uuid[$i],'taskNote','',$dataArr);
+        }
+
+          $expect_time = 0;
+        //查询当前项目的预计完成时间
+        $fcc->query("select expect_time from x_project_develop_items where develop_id = $develop_id");
+        while($fcc->next_record()){
+          if(strtotime($fcc->f('expect_time')) > $expect_time){
+            $expect_time = strtotime($fcc->f('expect_time'));
+          }
+        }
+
+        if($expect_time > time()){
+          $status = 2;
+        }else{
+          $status = 8;
+        }
+
+        $expect_time = date('Y-m-d',$expect_time);
+        $fieldArr = array('expect_time','status');
+        $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+        $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+
+      if( $develop_id){
+        $msgArr{'errmsg'} = '添加成功';
+      }else{
+        $msgArr{'errmsg'} = '发生异常错误';
+      }
+    }
+
+
+      //删除分解工作
+      else if($_GET{'xmlact'} == 'items_delete'){
+      $msgArr = array(
+      'error'=>0,
+      'errmsg'=>'更改成功',
+      );
+
+      $var_arr = array(
+      'str_var' => array(),
+      'digi_var' => array('develop_id','items_id','project_id'),
+      'time_var' => array(),
+      );
+      $mcc->getFormData($var_arr);
+
+
+      $fcc->query("delete from x_project_develop_items  WHERE items_id = '$items_id'");
+
+
+      if( $items_id){
+        $msgArr{'errmsg'} = '删除成功';
+      }else{
+        $msgArr{'errmsg'} = '发生异常错误';
+      }
+      }
+
+      //删除文件
+      else if($_GET{'xmlact'} == 'file_delete'){
+        $msgArr = array(
+          'error'=>0,
+          'errmsg'=>'更改成功',
+        );
+
+        $var_arr = array(
+          'str_var' => array(),
+          'digi_var' => array('id','develop_id'),
+          'time_var' => array(),
+        );
+        $mcc->getFormData($var_arr);
+
+        $fcc->query("select * from x_glo_files where id = $id");
+        if($fcc->next_record()){
+         $file_name = substr($fcc->f('raw_name'),0,strrpos($fcc->f('raw_name'),'.'));
+        }
+
+        //记录日志
+        $remarks =  $UserNameArr[$_tplThisUuid].'删除了文件“'.$file_name.'”';
+        $operate_uuid = $_tplThisUuid;
+        $operate_time = time();
+        $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+        list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+        $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+
+
+        $fcc->query("delete from x_glo_files  WHERE id = '$id'");
+
+        if( $id){
+          $msgArr{'errmsg'} = '删除成功';
+        }else{
+          $msgArr{'errmsg'} = '发生异常错误';
+        }
+      }
+
+    //交接工作
+    else if($_GET{'xmlact'} == 'join_work'){
+
+      $msgArr = array(
+      'error'=>0,
+      'errmsg'=>'更改成功',
+      );
+
+      $var_arr = array(
+      'str_var' => array('work_content'),
+      'digi_var' => array('develop_id','charge_uuid','otherwork_id'),
+      'time_var' => array(),
+      );
+      $mcc->getFormData($var_arr);
+
+
+      $is_final = 2;
+      $fieldArr = array('is_final');
+      $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+      $fcc->query("UPDATE x_project_develop_otherwork SET $updateStr WHERE otherwork_id = '$otherwork_id'");
+
+      $is_final = 0;
+      $other_uuid = $charge_uuid;
+      $fieldArr = array('develop_id','other_uuid','work_content','is_final');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO x_project_develop_otherwork($fieldStr) VALUES($valueStr)");
+
+
+      $fcc->query("select * from x_project_develop_otherwork where otherwork_id = $otherwork_id");
+      if($fcc->next_record()){
+        $old_other_uuid = $fcc->f('other_uuid');
+      }
+
+
+
+      //记录日志
+      $remarks =  $UserNameArr[$_tplThisUuid].'将该开发的参与人员'.$UserNameArr{$old_other_uuid}.'的工作交接给了'.$UserNameArr{$charge_uuid};
+      $operate_uuid = $_tplThisUuid;
+      $operate_time = time();
+      $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+      $maintenance_id = $fcc->insert_id();
+      if( $maintenance_id){
+        $msgArr{'errmsg'} = '交接成功';
+      }else{
+        $msgArr{'errmsg'} = '发生异常错误';
+      }
+
+      $fcc->query("select * from x_project_develop where develop_id = $develop_id");
+      if($fcc->next_record()){
+        $all_aux_user = $fcc->f('all_aux_user').','.$charge_uuid;
+      }
+
+
+      $fieldArr = array('all_aux_user');
+      $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+      $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+
+
+    }
+
+
+    //完成分解功能
+    else if($_GET{'xmlact'} == 'items_final'){
+        $msgArr = array(
+          'error'=>0,
+          'errmsg'=>'更改成功',
+        );
+
+        $var_arr = array(
+        'str_var' => array('remarks','final_time'),
+        'digi_var' => array('items_id','develop_id'),
+        'time_var' => array(),
+        );
+        $mcc->getFormData($var_arr);
+
+          $status = 1;
+          $final_time = strtotime($final_time);
+          $fieldArr = array('status','final_time');
+          $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+          $fcc->query("UPDATE x_project_develop_items SET $updateStr WHERE items_id = $items_id");
+
+          $fcc->query("select items_name from x_project_develop_items where items_id = $items_id");
+          if($fcc->next_record()){
+            $items_name = $fcc->f('items_name');
+          }
+          if(!$remarks){
+            $remarks = '无';
+          }
+          //记录日志
+          $remarks = $UserNameArr[$_tplThisUuid].'完成了分解功能“'.$items_name.'”实际完成时间：'.date('Y-m-d',$final_time).'<br>备注：'.$remarks;
+          $operate_uuid = $_tplThisUuid;
+          $operate_time = time();
+          $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+          list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+          $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+          $maintenance_id = $fcc->insert_id();
+
+          //完成的同时在处理更新表中进行更新
+          $submit_time = time();
+          $content = $remarks;
+          $submit_uuid = $_tplThisUuid;
+          $fieldArr = array('develop_id','submit_time','content','submit_uuid');
+          list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+          $fcc->query("INSERT INTO x_project_develop_process($fieldStr) VALUES($valueStr)");
+
+
+          $fcc->query("select expect_time from x_project_develop where develop_id = $develop_id");
+          if($fcc->next_record()){
+            $expect_time = $fcc->f('expect_time');
+          }
+
+          //更改状态
+          if(strtotime($expect_time) + 86400 < time()){
+            $status = 8;
+          }else{
+            $status = 2;
+          }
+          $fieldArr = array('status');
+          $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+          $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = $develop_id");
+
+
+
+
+        if( $maintenance_id){
+          $msgArr{'errmsg'} = '提交成功';
+        }else{
+          $msgArr{'errmsg'} = '发生异常错误';
+        }
+    }
+
+    //获取当前各类人员的姓名与uuid
+    else if($_GET{'xmlact'} == 'getAllUser'){
+        $var_arr = array(
+        'str_var' => array(),
+        'digi_var' => array(),
+        'time_var' => array(),
+        );
+        $mcc->getFormData($var_arr);
+
+        $UserArr = array();
+        $fcc->query("SELECT a.uid,a.cn_name,a.en_name,b.status 
+                     FROM common_user_profile a
+                     LEFT JOIN common_userauth b ON a.uid = b.uid");
+        while($fcc->next_record()){
+          if($fcc->f('status') == 1){
+            $UserArr['有效人员'][] = array(
+              'uid' => $fcc->f('uid'),
+              'cn_name' => $fcc->f('cn_name'),
+              'en_name' => $fcc->f('en_name'),
+            );
+          }else if($fcc->f('status') == 0){
+            $UserArr['无效人员'][] = array(
+              'uid' => $fcc->f('uid'),
+              'cn_name' => $fcc->f('cn_name'),
+              'en_name' => $fcc->f('en_name'),
+            );
+          }else{
+            $UserArr['其他人员'][] = array(
+              'uid' => $fcc->f('uid'),
+              'cn_name' => $fcc->f('cn_name'),
+              'en_name' => $fcc->f('en_name'),
+            );
+          }
+         
+        }
+     
+        $msgArr{'errmsg'} = 0;
+        $msgArr{'UserArr'} = $UserArr;
+        $msgArr{'errmsg'} = '查询成功';
+      }
+
+
+    //关闭分解功能
+    else if($_GET{'xmlact'} == 'items_close'){
+
+      $msgArr = array(
+      'error'=>0,
+      'errmsg'=>'更改成功',
+      );
+
+      $var_arr = array(
+      'str_var' => array('remarks'),
+      'digi_var' => array('items_id','develop_id'),
+      'time_var' => array(),
+      );
+      $mcc->getFormData($var_arr);
+
+      if(!$remarks){
+        $mcc->jsonError('错误：关闭该子功能，请填写备注');
+      }
+
+      $status = 2;
+      $fieldArr = array('status');
+      $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+      $fcc->query("UPDATE x_project_develop_items SET $updateStr WHERE items_id = $items_id");
+
+      $fcc->query("select items_name from x_project_develop_items where items_id = $items_id");
+      if($fcc->next_record()){
+        $items_name = $fcc->f('items_name');
+      }
+
+      //记录日志
+      $remarks = $UserNameArr[$_tplThisUuid].'关闭了分解功能“'.$items_name.'”<br>备注：'.$remarks;
+      $operate_uuid = $_tplThisUuid;
+      $operate_time = time();
+      $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+      $maintenance_id = $fcc->insert_id();
+
+      //完成的同时在处理更新表中进行更新
+      $submit_time = time();
+      $content = $remarks;
+      $submit_uuid = $_tplThisUuid;
+      $fieldArr = array('develop_id','submit_time','content','submit_uuid');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO x_project_develop_process($fieldStr) VALUES($valueStr)");
+
+
+      $fcc->query("select expect_time from x_project_develop where develop_id = $develop_id");
+      if($fcc->next_record()){
+        $expect_time = $fcc->f('expect_time');
+      }
+
+      //更改状态
+      if(strtotime($expect_time) + 86400 < time()){
+        $status = 5;
+      }else{
+        $status = 2;
+      }
+      $fieldArr = array('status');
+      $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+      $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = $develop_id");
+
+
+
+
+      if( $maintenance_id){
+        $msgArr{'errmsg'} = '提交成功';
+      }else{
+        $msgArr{'errmsg'} = '发生异常错误';
+      }
+    }
+
+
+
+
+
+
+//完成协助
+    else if($_GET{'xmlact'} == 'final_help'){
+
+      $msgArr = array(
+      'error'=>0,
+      'errmsg'=>'更改成功',
+      );
+
+      $var_arr = array(
+      'str_var' => array('final_help_time'),
+      'digi_var' => array('develop_id','project_id'),
+      'time_var' => array(),
+      );
+      $mcc->getFormData($var_arr);
+
+        $is_final = 1;
+        $fieldArr = array('is_final');
+        $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+        $fcc->query("UPDATE x_project_develop_otherwork SET $updateStr WHERE develop_id = '$develop_id' and other_uuid = $_tplThisUuid");
+
+        //记录日志
+        $remarks =  '参与人员'.$UserNameArr[$_tplThisUuid].'完成了协助的工作，实际完成时间为：'.$final_help_time;
+        $operate_uuid = $_tplThisUuid;
+        $operate_time = time();
+        $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+        list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+        $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+        $maintenance_id = $fcc->insert_id();
+
+        $fcc->query("select status from x_project_develop where develop_id = $develop_id");
+        if($fcc->next_record()){
+          $status = $fcc->f('status');
+        }
+
+        if($status == 1){
+          $status = 2;
+          $fieldArr = array('status');
+          $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+          $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id' ");
+        }
+
+      if( $maintenance_id){
+        $msgArr{'errmsg'} = '更改成功';
+      }else{
+        $msgArr{'errmsg'} = '发生异常错误';
+      }
+    }
+
+
+//更改重要性
+else if($_GET{'xmlact'} == 'edit_important'){
+$msgArr = array(
+'error'=>0,
+'errmsg'=>'更改成功',
+);
+
+$var_arr = array(
+'str_var' => array('edit_important_remarks'),
+'digi_var' => array('develop_id','important','project_id'),
+'time_var' => array(),
+);
+$mcc->getFormData($var_arr);
+
+$fcc->query('select urgent,important,charge_uuid from x_project_develop where develop_id = '.$develop_id);
+if($fcc->next_record()){
+  $urgent = $fcc->f('urgent');
+  $old_important = $fcc->f('important');
+  $charge_uuid = $fcc->f('charge_uuid');
+}
+
+if($urgent > 5 || $old_important > 3){
+  if(!$edit_important_remarks){
+    $mcc->jsonError('错误：请填写备注');
+  }
+}else{
+  if(!$edit_important_remarks){
+    $edit_important_remarks = '无';
+  }
+}
+if($_tplThisUuid == 51){
+$fieldArr = array('important');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+//记录日志
+$remarks =  $UserNameArr[$_tplThisUuid].'将开发重要程度从：'.$_xProjectImportant{$old_important}.'&nbsp;&nbsp;调整到：'.$_xProjectImportant{$important}.'<br>备注：'.$edit_important_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}else{
+//判断是否为高紧急、高重要性反馈
+if($urgent <= 5  && $old_important <= 3 ){
+$fieldArr = array('important');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+
+//记录日志
+$remarks =  $UserNameArr[$_tplThisUuid].'将开发重要程度从'.$_xProjectImportant{$old_important}.'&nbsp;&nbsp;调整到'.$_xProjectImportant{$important}.'<br>备注：'.$edit_important_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}else{
+//更改状态
+$status = 12;
+$confirm_num = 4;
+$fieldArr = array('status','confirm_num');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+//发出通知
+$fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+if($fcc->next_record()){
+$project_name = $fcc->f('project_name');
+}
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $memo_content =   $UserNameArr{$charge_uuid}.'提交了一条关于“'.$project_name.'”项目的开发申请，，请查看并进行审批';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = 51;
+
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject =$memo_theme;
+  $news_type = 1;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $content = $memo_content;
+  $submit_time = time();
+  $relate_project = 1;
+  $link_id = $develop_id;
+  $func_name = 'develop';
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project','func_name','project_id','link_id');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+//获取通知id
+$info_note_id  = $fcc->insert_id();
+
+
+//记录日志
+$remarks =  $UserNameArr[$_tplThisUuid].'将开发重要程度从'.$_xProjectImportant{$old_important}.'&nbsp;&nbsp;调整到'.$_xProjectImportant{$important}.'，待主管审批<br>备注：'.$edit_important_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+}
+$maintenance_id = $fcc->insert_id();
+
+  if( $maintenance_id){
+    $msgArr{'errmsg'} = '更改成功';
+  }else{
+    $msgArr{'errmsg'} = '发生异常错误';
+  }
+}
+//更改紧急程度
+else if($_GET{'xmlact'} == 'edit_urgent'){
+$msgArr = array(
+'error'=>0,
+'errmsg'=>'更改成功',
+);
+
+$var_arr = array(
+'str_var' => array('edit_urgent_remarks'),
+'digi_var' => array('develop_id','urgent','project_id'),
+'time_var' => array(),
+);
+$mcc->getFormData($var_arr);
+$fcc->query('select urgent,important,charge_uuid from x_project_develop where develop_id = '.$develop_id);
+if($fcc->next_record()){
+$old_urgent = $fcc->f('urgent');
+$important = $fcc->f('important');
+$charge_uuid = $fcc->f('charge_uuid');
+}
+
+  if($old_urgent > 5 || $important > 3){
+    if(!$edit_urgent_remarks){
+      $mcc->jsonError('错误：请填写备注');
+    }
+  }else{
+    if(!$edit_urgent_remarks){
+      $edit_urgent_remarks = '无';
+    }
+  }
+
+if($_tplThisUuid == 51){
+$fieldArr = array('urgent');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+$submit_time = time();
+//记录日志
+$remarks =  $UserNameArr[$_tplThisUuid].'将开发紧急程度从：'.$_xProjectUrgent{$old_urgent}.'&nbsp;&nbsp;调整到：'.$_xProjectUrgent{$urgent}.'<br>备注：'.$edit_urgent_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}else{
+
+//判断是否为高紧急、高重要性反馈
+if($old_urgent <= 5 && $important <= 3 ){
+$fieldArr = array('urgent');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+$submit_time = time();
+//记录日志
+$remarks =  $UserNameArr[$_tplThisUuid].'将开发紧急程度从'.$_xProjectUrgent{$old_urgent}.'&nbsp;&nbsp;调整到'.$_xProjectUrgent{$urgent}.'<br>备注：'.$edit_urgent_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}else{
+//更改状态
+$status = 13;
+$confirm_num = 3;
+$fieldArr = array('status','confirm_num');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+//发出通知
+$fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+if($fcc->next_record()){
+$project_name = $fcc->f('project_name');
+}
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $memo_content =   $UserNameArr{$charge_uuid}.'提交了一条关于“'.$project_name.'”项目的开发申请，请查看并进行审批';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = 51;
+
+
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $link_id = $develop_id;
+  $func_name = 'develop';
+  $news_type = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project','func_name','project_id','link_id');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+  //获取通知id
+  $info_note_id  = $fcc->insert_id();
+
+
+//记录日志
+$remarks =  $UserNameArr[$_tplThisUuid].'将开发紧急程度从'.$_xProjectUrgent{$old_urgent}.'&nbsp;&nbsp;调整到'.$_xProjectUrgent{$urgent}.'，待主管审批<br>备注：'.$edit_urgent_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+}
+$maintenance_id = $fcc->insert_id();
+if( $maintenance_id){
+$msgArr{'errmsg'} = '更改成功';
+}else{
+$msgArr{'errmsg'} = '发生异常错误';
+}
+}
+//审批通过
+else if($_GET{'xmlact'} == 'confirm_pass'){
+$msgArr = array(
+'error'=>0,
+'errmsg'=>'更改成功',
+);
+
+$var_arr = array(
+'str_var' => array('confirm_remarks'),
+'digi_var' => array('develop_id','project_id'),
+'time_var' => array(),
+);
+$mcc->getFormData($var_arr);
+
+//获取完成时间
+$fcc->query("select remarks from x_project_develop_news
+where remarks like '%提交了完成开发申请%' and  develop_id = '$develop_id'
+order by operate_time desc
+LIMIT 1"
+);
+if($fcc->next_record()){
+$final_time = substr($fcc->f('remarks'),strpos($fcc->f('remarks'),'：')+3,10);
+}
+
+
+//获取修改时间
+$fcc->query("select remarks from x_project_develop_news
+where remarks like '%将预计完成时间从%' and  develop_id = '$develop_id'
+order by operate_time desc
+LIMIT 1"
+);
+if($fcc->next_record()){
+  $expect_time = substr($fcc->f('remarks'),strpos($fcc->f('remarks'),'调整到')+9,10);
+}
+
+
+//获取紧急程度
+$fcc->query("select remarks from x_project_develop_news
+where remarks like '%将开发紧急程度从%' and  develop_id = '$develop_id'
+order by operate_time desc
+LIMIT 1"
+);
+if($fcc->next_record()){
+  $urgent_info = substr($fcc->f('remarks'),strpos($fcc->f('remarks'),'调整到')+6);
+  if(strpos($urgent_info,'H+') == 3){
+    $urgent = 9;
+  }else if(strpos($urgent_info,'H-') == 3){
+    $urgent = 7;
+  }else if(strpos($urgent_info,'H') == 3){
+    $urgent = 8;
+  }else if(strpos($urgent_info,'M+') == 3){
+    $urgent = 6;
+  }else if(strpos($urgent_info,'M-') == 3){
+    $urgent = 4;
+  } else if(strpos($urgent_info,'M') == 3){
+    $urgent = 5;
+  }else if(strpos($urgent_info,'L+') == 3){
+    $urgent = 3;
+  }else if(strpos($urgent_info,'L-') == 3){
+    $urgent = 1;
+  }else if(strpos($urgent_info,'L') == 3){
+    $urgent = 2;
+  }
+}
+
+//获取重要程度
+$fcc->query("select remarks from x_project_develop_news
+where remarks like '%将开发重要程度从%' and  develop_id = '$develop_id'
+order by operate_time desc
+LIMIT 1"
+);
+if($fcc->next_record()){
+  $important_info = substr($fcc->f('remarks'),strpos($fcc->f('remarks'),'调整到')+6);
+  if(strpos($important_info,'★★★★★') == 3){
+    $important = 5;
+  }else if(strpos($important_info,'★★★★') == 3){
+    $important = 4;
+  }else if(strpos($important_info,'★★★') == 3){
+    $important = 3;
+  }else if(strpos($important_info,'★★') == 3){
+    $important = 2;
+  }else if(strpos($important_info,'★') == 3){
+    $important = 1;
+  }
+}
+
+
+//获取预计完成时间
+$fcc->query("select expect_time from x_project_develop
+where   develop_id = '$develop_id'");
+if($fcc->next_record()){
+  if(strtotime($fcc->f('expect_time'))){
+    $old_expect_time = strtotime($fcc->f('expect_time')) + 86400;
+  }else{
+    $old_expect_time = strtotime($fcc->f('expect_time'));
+  }
+}
+
+
+
+    //查看是否存在处理信息
+    $fcc->query("select count(develop_id) t from x_project_develop_process where develop_id = '$develop_id'");
+    if($fcc->next_record()){
+      $develop_process_num = $fcc->f('t');
+    }
+
+
+    //查看是否存在完成的分解工作
+    $fcc->query("select * from x_project_develop_items where develop_id = $develop_id and status = 1");
+    if($fcc->next_record()){
+      $items_num = 1;
+    }else{
+      $items_num = 0;
+    }
+
+
+    //获取负责人id、提交人id和审批码
+    $fcc->query('select confirm_num,charge_uuid from x_project_develop where develop_id = '.$develop_id);
+    if($fcc->next_record()){
+      $confirm_num = $fcc->f('confirm_num');
+      $charge_uuid = $fcc->f('charge_uuid');
+    }
+
+    //消除待办消息
+    $note_final_time = time();
+    $fcc->query("update info_note set news_type = 2,checked = 1,final_time = $note_final_time where func_name = 'develop' and link_id = $develop_id order by submit_time desc limit 1");
+
+//开发修改时间通过审批
+if($confirm_num == 2 ){
+if(!$confirm_remarks){
+  $confirm_remarks = '无';
+}
+
+
+
+  if(strtotime($expect_time)+86400 >= time()){
+    if( $develop_process_num == 0 && $items_num == 0){
+      $status = 1;
+    }else{
+      $status = 2;
+    }
+  }else if(strtotime($expect_time)+86400 < time()){
+    $status = 8;
+  }
+
+$fieldArr = array('status','expect_time');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+
+//发出通知
+  $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+  if($fcc->next_record()){
+    $project_name = $fcc->f('project_name');
+  }
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $memo_content =  '您有一条关于“'.$project_name.'”项目的开发项修改预计完成时间申请通过审批';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = $charge_uuid;
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $news_type = 3;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+
+//记录日志
+$remarks =  $UserNameArr[$_tplThisUuid].'通过了修改预计完成时间的申请<br>备注：'.$confirm_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+
+//反馈修改紧急程度通过审批
+if($confirm_num == 3 ){
+  if(!$confirm_remarks){
+    $confirm_remarks = '无';
+  }
+  if($old_expect_time){
+    if($old_expect_time < time()){
+      $status = 8;
+    }else{
+      if($develop_process_num == 0 && $items_num == 0){
+        $status = 1;
+      }else{
+        $status = 2;
+      }
+    }
+  }else{
+    $status = 1;
+  }
+
+$fieldArr = array('status','urgent');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+//发出通知
+  $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+  if($fcc->next_record()){
+    $project_name = $fcc->f('project_name');
+  }
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $memo_content =  '您有一条关于“'.$project_name.'”项目的开发项修改紧急程度申请通过审批';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = $charge_uuid;
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $news_type = 3;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+
+//记录日志
+$remarks =  $UserNameArr[$_tplThisUuid].'通过了修改紧急程度申请<br>备注：'.$confirm_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+
+//反馈修改重要程度通过审批
+if($confirm_num == 4 ){
+
+    if(!$confirm_remarks){
+      $confirm_remarks = '无';
+    }
+
+
+  if($old_expect_time){
+    if($old_expect_time < time()){
+        $status = 8;
+    }else{
+      if($develop_process_num == 0 && $items_num == 0){
+        $status = 1;
+      }else{
+        $status = 2;
+      }
+    }
+  }else{
+      $status = 1;
+  }
+
+    $fieldArr = array('status','important');
+    $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+    $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+  //发出通知
+  $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+  if($fcc->next_record()){
+    $project_name = $fcc->f('project_name');
+  }
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $memo_content =  '您有一条关于“'.$project_name.'”项目的开发项修改重要程度申请通过审批';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = $charge_uuid;
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $news_type = 3;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+
+    //记录日志
+    $remarks =  $UserNameArr[$_tplThisUuid].'通过了修改重要程度申请<br>备注：'.$confirm_remarks;
+    $operate_uuid = $_tplThisUuid;
+    $operate_time = time();
+    $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+    list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+    $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+
+
+//反馈关闭通过
+if($confirm_num == 5 ){
+
+  if(!$confirm_remarks){
+    $confirm_remarks = '无';
+  }
+
+  //发出通知
+  $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+  if($fcc->next_record()){
+    $project_name = $fcc->f('project_name');
+  }
+
+  //查询是暂缓还是取消
+    $fcc->query("select remarks from x_project_develop_news where develop_id = $develop_id order by operate_time desc limit 1");
+    if($fcc->next_record()){
+      if(strpos($fcc->f('remarks'),'暂缓')){
+        $status = 14;
+        $close_num = 1;
+        $memo_content =  '您有一条关于“'.$project_name.'”项目的开发项暂缓申请通过审批';
+      }else{
+        $status = 15;
+        $close_num = 0;
+        $memo_content =  '您有一条关于“'.$project_name.'”项目的开发项取消申请通过审批';
+      }
+    }
+
+  //更新消息通知状态
+  $note_final_time = time();
+  $fcc->query("update info_note set news_type = 2,checked = 1,final_time = $note_final_time where link_id = $develop_id and func_name = 'develop' and news_type = 1");
+
+  $fieldArr = array('status');
+  $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+  $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = $charge_uuid;
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $news_type = 3;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+
+  //记录日志
+  if($close_num){
+    $remarks =  $UserNameArr[$_tplThisUuid].'通过了暂缓开发申请，当前开发已暂缓<br>备注：'.$confirm_remarks;
+  }else{
+    $remarks =  $UserNameArr[$_tplThisUuid].'通过了取消开发申请，当前开发已取消<br>备注：'.$confirm_remarks;
+  }
+  $operate_uuid = $_tplThisUuid;
+  $operate_time = time();
+  $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+  }
+
+  if( $memo_id){
+    $msgArr{'errmsg'} = '审批成功';
+  }else{
+    $msgArr{'errmsg'} = '发生异常错误';
+  }
+
+}
+
+
+    //关闭审批
+    if($_GET{'xmlact'} == 'delete_confirm'){
+      $msgArr = array(
+      'error'=>0,
+      'errmsg'=>'添加成功',
+      );
+
+      $var_arr = array(
+      'str_var' => array(),
+      'digi_var' => array('develop_id'),
+      'time_var' => array(),
+      );
+      $mcc->getFormData($var_arr);
+      $fcc->query("select * from x_project_develop where develop_id = $develop_id");
+      if($fcc->next_record()){
+        $project_id = $fcc->f('project_id');
+        $old_status = $fcc->f('status');
+      }
+
+      //清除待办
+      $fcc->query("delete from  info_note WHERE  func_name='develop' and link_id = $develop_id order by submit_time desc limit 1");
+
+      $fcc->query("select expect_time,count(process_id) t from x_project_develop a,x_project_develop_process b where a.develop_id = $develop_id and a.develop_id = b.develop_id");
+      if($fcc->next_record()){
+        $expect_time = $fcc->f('expect_time');
+        $process_num = $fcc->f('t');
+      }
+
+      $final_items = 0;
+      $fcc->query("select * from x_project_develop_items where develop_id = $develop_id and status != 0");
+      while($fcc->next_record()){
+        $final_items++;
+      }
+
+      if(strtotime($expect_time)+86400 < time()){
+        $status = 8;
+      }else if(strtotime($expect_time)+86400 >= time()){
+        if($process_num != 0 || $final_items != 0){
+          $status = 2;
+        }else if($process_num == 0){
+          $status = 1;
+        }
+      }
+
+      $fieldArr = array('status');
+      $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+      $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+
+      //记录日志
+      $remarks =  $UserNameArr[$_tplThisUuid].'撤回了当前审批';
+      $operate_uuid = $_tplThisUuid;
+      $operate_time = time();
+      $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+      list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+      $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+      $maintenance_id = $fcc->insert_id();
+
+      //项目名称
+      $_tplallNameArr = $fcc->getProjectNameArr();
+
+      if($old_status == 9 || $old_status == 10){
+        $note_type = 2;
+        $receiver_uid = $_tplThisUuid;
+        $sender_uid = $_tplThisUuid;
+        $subject = '开发负责通知';
+        $content = '您有一项关于“'.$_tplallNameArr{$project_id}.'”项目的开发待完成，请及时查看并处理';
+        $submit_time = time();
+        $news_type = 1;
+        $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+        $relate_project = 1;
+        $link_id = $develop_id;
+        $func_name = 'develop';
+        $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project','func_name','project_id','link_id');
+        list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+        $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+      }
+
+      if( $maintenance_id){
+        $msgArr{'errmsg'} = '撤回成功';
+      }else{
+        $msgArr{'errmsg'} = '发生异常错误';
+      }
+    }
+
+
+      //撤销当前状态
+      if($_GET{'xmlact'} == 'recall'){
+          $msgArr = array(
+          'error'=>0,
+          'errmsg'=>'添加成功',
+          );
+
+          $var_arr = array(
+          'str_var' => array('remarks'),
+          'digi_var' => array('develop_id'),
+          'time_var' => array(),
+          );
+          $mcc->getFormData($var_arr);
+
+          if(!$remarks){
+            $mcc->jsonError('错误：撤回备注不可为空');
+          }
+
+
+
+          $fcc->query("select expect_time,count(process_id) t from x_project_develop a,x_project_develop_process b where a.develop_id = $develop_id and a.develop_id = b.develop_id");
+          if($fcc->next_record()){
+            $expect_time = $fcc->f('expect_time');
+            $process_num = $fcc->f('t');
+          }
+
+          $final_items = 0;
+          $fcc->query("select * from x_project_develop_items where develop_id = $develop_id and status != 0");
+          while($fcc->next_record()){
+            $final_items++;
+          }
+
+          if(strtotime($expect_time)+86400 < time()){
+            $status = 8;
+          }else if(strtotime($expect_time)+86400 >= time()){
+            if($process_num != 0 || $final_items != 0){
+              $status = 2;
+            }else if($process_num == 0){
+              $status = 1;
+            }
+          }
+
+          $fieldArr = array('status');
+          $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+          $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+        $fcc->query("select charge_uuid,project_id from x_project_develop where develop_id = $develop_id");
+        if($fcc->next_record()){
+          $charge_uuid = $fcc->f('charge_uuid');
+          $project_id = $fcc->f('project_id');
+        }
+
+        //发出通知
+        $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+        if($fcc->next_record()){
+          $project_name = $fcc->f('project_name');
+        }
+
+        $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+        $submit_uuid = $_tplThisUuid;
+        $status = 6;
+        $memo_theme = '开发审批通知';
+        $memo_content = '您有一项关于“'.$project_name.'”项目的开发待完成，请及时查看并处理';
+        $time = date('Y-m-d H:i:s');
+        $submit_time = time();
+        $memo_time = time();
+        $uid = $charge_uuid;
+//        $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//        list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//        $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+        $memo_id = $fcc->insert_id();
+
+        $note_type = 2;
+        $sender_uid = $_tplThisUuid;
+        $receiver_uid = $uid;
+        $subject = $memo_theme;
+        $content = $memo_content;
+        $submit_time = time();
+        $news_type = 1;
+        $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+        $relate_project = 1;
+        $link_id = $develop_id;
+        $func_name = 'develop';
+        $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project','func_name','project_id','link_id');
+        list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+        $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+
+          //记录日志
+          $remarks =  $UserNameArr[$_tplThisUuid].'撤回了当前状态<br>备注：'.$remarks;
+          $operate_uuid = $_tplThisUuid;
+          $operate_time = time();
+          $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+          list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+          $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+          $maintenance_id = $fcc->insert_id();
+
+          if( $maintenance_id){
+          $msgArr{'errmsg'} = '撤回成功';
+          }else{
+          $msgArr{'errmsg'} = '发生异常错误';
+          }
+      }
+
+
+
+
+
+//审批驳回
+else if($_GET{'xmlact'} == 'confirm_reject'){
+$msgArr = array(
+'error'=>0,
+'errmsg'=>'更改成功',
+);
+
+$var_arr = array(
+'str_var' => array('confirm_remarks'),
+'digi_var' => array('develop_id','project_id'),
+'time_var' => array(),
+);
+$mcc->getFormData($var_arr);
+
+  //清除待办
+  $note_final_time = time();
+  $fcc->query("update info_note set news_type = 2,checked = 1,final_time = $note_final_time where func_name = 'develop' and link_id = $develop_id order by submit_time desc limit 1");
+
+  //获取负责人id和审批码
+  $fcc->query('select confirm_num,charge_uuid from x_project_develop where develop_id= '.$develop_id);
+  if($fcc->next_record()){
+    $confirm_num = $fcc->f('confirm_num');
+    $charge_uuid = $fcc->f('charge_uuid');
+  }
+
+
+  //查看是否存在处理信息
+  $fcc->query('select count(develop_id) as t  from x_project_develop_process where develop_id = '.$develop_id);
+  while($fcc->next_record()){
+    $develop_process_num = $fcc->f('t');
+  }
+
+  //查看是否存在完成的分解工作
+  $fcc->query("select * from x_project_develop_items where develop_id = $develop_id and status = 1");
+  if($fcc->next_record()){
+    $items_num = 1;
+  }else{
+    $items_num = 0;
+  }
+
+
+
+  //获取预计完成时间
+  $fcc->query("select expect_time from x_project_develop
+  where  develop_id = '$develop_id'");
+  if($fcc->next_record()){
+    if(strtotime($fcc->f('expect_time'))){
+      $old_expect_time = strtotime($fcc->f('expect_time')) + 86400;
+    }else{
+      $old_expect_time = strtotime($fcc->f('expect_time'));
+    }
+  }
+
+//反馈未通过审批
+if($confirm_num == 1 ){
+  if(!$confirm_remarks){
+    $mcc->jsonError('错误：请填写不通过备注');
+  }
+
+  if($old_expect_time){
+    if($old_expect_time < time()){
+      $status = 8;
+    }else{
+      if($develop_process_num == 0 && $items_num == 0){
+        $status = 1;
+      }else{
+        $status = 2;
+      }
+    }
+  }else{
+      $status = 1;
+  }
+
+$fieldArr = array('status');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+//发出通知
+$fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+if($fcc->next_record()){
+$project_name = $fcc->f('project_name');
+}
+
+$end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+$submit_uuid = $_tplThisUuid;
+$status = 6;
+$memo_theme = '开发审批通知';
+$memo_content =  '您有一条关于“'.$project_name.'”项目的开发审批没有通过，请查看原因并处理';
+$time = date('Y-m-d H:i:s');
+$submit_time = time();
+$memo_time = time();
+$uid = $charge_uuid;
+//$fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//$fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+$memo_id = $fcc->insert_id();
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $news_type = 3;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+  //获取通知id
+  $info_note_id  = $fcc->insert_id();
+
+
+  //记录日志
+  $remarks = $UserNameArr[$_tplThisUuid].'驳回了完成开发申请<br>备注：'.$confirm_remarks;
+  $operate_uuid = $_tplThisUuid;
+  $operate_time =time();
+  $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+
+
+
+
+
+//反馈修改时间未通过审批
+if($confirm_num == 2 ){
+  if(!$confirm_remarks){
+    $mcc->jsonError('错误：请填写不通过备注');
+  }
+
+  if($old_expect_time){
+    if($old_expect_time < time()){
+      $status = 8;
+    }else{
+      if($develop_process_num == 0 && $items_num == 0){
+        $status = 1;
+      }else{
+        $status = 2;
+      }
+    }
+  }else{
+        $status = 1;
+  }
+$fieldArr = array('status');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+//发出通知
+$fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+if($fcc->next_record()){
+  $project_name = $fcc->f('project_name');
+}
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $memo_content =  '您有一条关于“'.$project_name.'”项目的开发审批没有通过，请查看原因并处理';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = $charge_uuid;
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $news_type = 3;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+
+//记录日志
+$remarks = $UserNameArr[$_tplThisUuid].'驳回了修改预计完成时间的申请<br>备注：'.$confirm_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+
+
+
+
+//反馈修改紧急程度未通过审批
+if($confirm_num == 3 ){
+if(!$confirm_remarks){
+  $mcc->jsonError('错误：请填写不通过备注');
+}
+  if($old_expect_time){
+    if($old_expect_time < time()){
+      $status = 8;
+    }else{
+      if($develop_process_num == 0 && $items_num == 0){
+        $status = 1;
+      }else{
+        $status = 2;
+      }
+    }
+  }else{
+    $status = 1;
+  }
+$fieldArr = array('status');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+//发出通知
+  $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+  if($fcc->next_record()){
+    $project_name = $fcc->f('project_name');
+  }
+
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $memo_content =  '您有一条关于“'.$project_name.'”项目的开发项修改紧急程度申请没有通过审批，请查看原因并处理';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = $charge_uuid;
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $news_type = 3;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+//记录日志
+$remarks = $UserNameArr[$_tplThisUuid].'驳回了修改紧急程度申请<br>备注：'.$confirm_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+
+
+//反馈修改重要程度未通过审批
+if($confirm_num == 4 ){
+  if(!$confirm_remarks){
+    $mcc->jsonError('错误：请填写不通过备注');
+  }
+  if($old_expect_time){
+    if($old_expect_time < time()){
+      $status = 8;
+    }else{
+      if($develop_process_num == 0 && $items_num == 0){
+        $status = 1;
+      }else{
+        $status = 2;
+      }
+    }
+  }else{
+    $status = 1;
+  }
+
+$fieldArr = array('status');
+$updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+$fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+//发出通知
+  $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+  if($fcc->next_record()){
+    $project_name = $fcc->f('project_name');
+  }
+
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $memo_content =  '您有一条关于“'.$project_name.'”项目的开发项修改重要程度申请没有通过审批，请查看原因并处理';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = $charge_uuid;
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $news_type = 3;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+//记录日志
+$remarks = $UserNameArr[$_tplThisUuid].'驳回了修改重要程度申请<br>备注：'.$confirm_remarks;
+$operate_uuid = $_tplThisUuid;
+$operate_time = time();
+$fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+$fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+
+//反馈关闭未通过审批
+if($confirm_num == 5 ){
+  if(!$confirm_remarks){
+    $mcc->jsonError('错误：请填写不通过备注');
+  }
+
+  //发出通知
+  $fcc->query("SELECT project_name FROM x_project_info WHERE project_id = '$project_id'");
+  if($fcc->next_record()){
+    $project_name = $fcc->f('project_name');
+  }
+    //查询是暂缓还是取消
+    $fcc->query("select remarks from x_project_develop_news where develop_id = $develop_id order by operate_time desc limit 1");
+    if($fcc->next_record()){
+      if(strpos($fcc->f('remarks'),'暂缓')){
+        $close_num = 1;
+        $memo_content =  '您有一条关于“'.$project_name.'”项目的开发项暂缓开发申请没有通过审批，请查看原因并处理';
+      }else{
+        $close_num = 0;
+        $memo_content =  '您有一条关于“'.$project_name.'”项目的开发取消开发申请没有通过审批，请查看原因并处理';
+      }
+    }
+
+  if($old_expect_time){
+    if($old_expect_time < time()){
+      $status = 8;
+    }else{
+      if($develop_process_num == 0 && $items_num == 0){
+        $status = 1;
+      }else{
+        $status = 2;
+      }
+    }
+  }else{
+    $status = 1;
+  }
+  $fieldArr = array('status');
+  $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+  $fcc->query("UPDATE x_project_develop SET $updateStr WHERE develop_id = '$develop_id'");
+
+  $end_time = strtotime(date('Y-m-d H:i',strtotime("+2 day")));
+  $submit_uuid = $_tplThisUuid;
+  $status = 6;
+  $memo_theme = '开发审批通知';
+  $time = date('Y-m-d H:i:s');
+  $submit_time = time();
+  $memo_time = time();
+  $uid = $charge_uuid;
+//  $fieldArr = array('uid','memo_content','status','memo_theme','submit_uuid','submit_time','memo_time','end_time');
+//  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+//  $fcc->query("INSERT INTO memo_remind($fieldStr) VALUES($valueStr)");
+  $memo_id = $fcc->insert_id();
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = $memo_theme;
+  $content = $memo_content;
+  $submit_time = time();
+  $news_type = 3;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+  $note_type = 2;
+  $sender_uid = $submit_uuid;
+  $receiver_uid = $uid;
+  $subject = '开发负责通知';
+  $content = '您有一项关于“'.$project_name.'”项目的开发待完成，请及时查看并处理';
+  $submit_time = time();
+  $news_type = 1;
+  $link_href = '/?_mod=ngproject&_func=develop&_act=info&project_id='.$project_id.'&develop_id='.$develop_id;
+  $relate_project = 1;
+  $link_id = $develop_id;
+  $func_name = 'develop';
+  $fieldArr = array('note_type','sender_uid','receiver_uid','subject','content','submit_time','news_type','link_href','relate_project','func_name','project_id','link_id');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO info_note($fieldStr) VALUES($valueStr)");
+
+
+  //记录日志
+  if($close_num){
+    $remarks = $UserNameArr[$_tplThisUuid].'驳回了暂缓当前开发申请<br>备注：'.$confirm_remarks;
+  }else{
+    $remarks = $UserNameArr[$_tplThisUuid].'驳回了取消当前开发申请<br>备注：'.$confirm_remarks;
+  }
+  $operate_uuid = $_tplThisUuid;
+  $operate_time = time();
+  $fieldArr = array('develop_id','remarks','operate_time','operate_uuid');
+  list($fieldStr,$valueStr) = $mcc->buildSqlInsertStr($fieldArr);
+  $fcc->query("INSERT INTO x_project_develop_news($fieldStr) VALUES($valueStr)");
+}
+
+  $maintenance_id = $fcc->insert_id();
+  if( $maintenance_id){
+    $msgArr{'errmsg'} = '审批成功';
+  }else{
+    $msgArr{'errmsg'} = '发生异常错误';
+  }
+}
+
+
+
+          //撤销当前状态
+          if($_GET{'xmlact'} == 'relate_header'){
+            $msgArr = array(
+              'error'=>0,
+              'errmsg'=>'添加成功',
+            );
+
+            $var_arr = array(
+              'str_var' => array(),
+              'digi_var' => array('develop_id','project_id','header_id','items_id'),
+              'time_var' => array(),
+            );
+            $mcc->getFormData($var_arr);
+
+            if(!$header_id){
+              $mcc->jsonError("请选择正确的测试主题");
+            }
+
+           $fcc->query("update x_project_develop_items set header_id = $header_id where items_id = $items_id and develop_id = $develop_id");
+
+            if( $items_id){
+              $msgArr{'errmsg'} = '关联成功';
+            }else{
+              $msgArr{'errmsg'} = '发生异常错误';
+            }
+          }
+
+
+      echo json_encode($msgArr);
+      exit;
+    }
+
+    // GET
+    $var_arr=array(
+      'str_var'=>array(''),
+      'digi_var'=>array('project_id','develop_id','table_type','id'),
+      'time_var'=>array(''),
+    );
+    $mcc->getFormData($var_arr);
+
+
+    if(!$project_id){
+        header("location:/?_mod=ngproject&_func=develop&_act=home");
+        exit;
+    }
+
+    //如果存在id改变信息状态
+    if($id){
+        $checked = 1;
+        $fieldArr = array('checked');
+        $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+        $fcc->query("UPDATE info_note SET $updateStr WHERE id = '$id'");
+    }
+    $_tplProjectID = $project_id;
+    $_tplDevelopID = $develop_id;
+    $_tplNameArr = $fcc->getProjectShortNameArr();
+    $_tplallNameArr = $fcc->getProjectNameArr();
+    if($_tplNameArr{$project_id}){
+      $_tplProjectNames = $_tplNameArr{$project_id};
+    }else{
+      $_tplProjectNames = $_tplallNameArr{$project_id};
+    }
+
+
+
+    //参与人员
+    $items_aux_user = array();
+    $fcc->query("select * from x_project_develop_items where project_id = $project_id");
+    while($fcc->next_record()){
+      if($items_aux_user[$fcc->f('develop_id')]){
+        $items_aux_user[$fcc->f('develop_id')] .= $items_aux_user[$fcc->f('develop_id')].','.$fcc->f('work_uuid');
+      }else{
+        $items_aux_user[$fcc->f('develop_id')] = $fcc->f('work_uuid');
+      }
+    }
+
+
+    //文件下载与显示
+    $fcc->query("
+    SELECT raw_name,auth_str,id,sub_id,sub_id2,fname,submit_time,submit_uuid
+    FROM x_glo_files
+    WHERE link_id = '$project_id' and func_name = 'ngproject:develop'");
+    while($fcc->next_record()){
+      if(strcasecmp(substr($fcc->f('fname'),strpos($fcc->f('fname'),'.')+1),"pdf") == 0 || strcasecmp(substr($fcc->f('fname'),strpos($fcc->f('fname'),'.')+1),"doc") == 0 || strcasecmp(substr($fcc->f('fname'),strpos($fcc->f('fname'),'.')+1),"docx") == 0){
+        $_tplDownload ='<a href="/?_mod=httpd&_func=func&_act=getfile&fid=' . $fcc->f('id') . '&as=' . md5($fcc->f('auth_str')) . '">' . $fcc->f('raw_name') . '</a>&nbsp;&nbsp;&nbsp;<button  data-id="'.$fcc->f('id').'"  data-as="'.md5($fcc->f('auth_str')).'"  name="_commonDocPreviewBTN" class="btn btn-xs btn-primary operate_btn"><i class="icon-film"></i>&nbsp;预览</button>';
+      }else if(strcasecmp(substr($fcc->f('fname'),strpos($fcc->f('fname'),'.')+1),"jpg") == 0 || strcasecmp(substr($fcc->f('fname'),strpos($fcc->f('fname'),'.')+1),"png") == 0 ){
+        $_tplDownload = '<div style="height:120px;width:200px;text-align: center;float: left"><image src="/?_mod=httpd&_func=func&_act=getfile&fid=' . $fcc->f('id') . '&as=' . md5($fcc->f('auth_str')) . '"  name="_commonImgPreviewBTN" data-src="/?_mod=httpd&_func=func&_act=getfile&fid=' . $fcc->f('id') . '&as=' . md5($fcc->f('auth_str')) . '" style="height:100px;width:200px"/><a href="/?_mod=httpd&_func=func&_act=getfile&fid=' . $fcc->f('id') . '&as=' . md5($fcc->f('auth_str')) . '"> ' . $fcc->f('raw_name').'</a></div>';
+      }else{
+        $_tplDownload ='<a href="/?_mod=httpd&_func=func&_act=getfile&fid=' . $fcc->f('id') . '&as=' . md5($fcc->f('auth_str')) . '">' . $fcc->f('raw_name') . '</a>';
+      }
+      if($fcc->f('submit_time') + 7*86400 > time() && $fcc->f('submit_uuid') == $_tplThisUuid){
+        $_tplLinkLists{$fcc->f('sub_id')} .= '<div class="form-group">'.$_tplDownload.'&nbsp;&nbsp;<button class="btn btn-xs btn-danger" data-toggle="modal" data-target="#delete_file_Modal"  onclick="get_file_id('.$fcc->f('id').')"><i class="	glyphicon glyphicon-trash"></i>&nbsp;删除</button></div>';
+      }else{
+        $_tplLinkLists{$fcc->f('sub_id')} .= '<div class="form-group">'.$_tplDownload.'</div>';
+      }
+    }
+
+
+    //将该项目的成员放入数组中
+    $_tplProjectEngArr = array();
+    $j = 0;
+    $fcc->query("SELECT uuid FROM x_project_user WHERE  project_id=$project_id and type = '0'");
+    while ($fcc->next_record()) {
+      $_tplProjectEngArr[$j] = $fcc->f('uuid');
+      $j++;
+    }
+
+      $fcc->query("select count(otherwork_id) as t from x_project_develop_otherwork where develop_id = $develop_id");
+      if($fcc->next_record()){
+       $all_aux_user_num  =  $fcc->f('t');
+      }
+
+      $fcc->query("select charge_uuid from x_project_develop where develop_id = $develop_id");
+        if($fcc->next_record()){
+          $charge_uuid = $fcc->f('charge_uuid');
+        }
+
+      //计算是否完成分解任务或者进行过更新
+        $items_final_num = 0; //分解任务完成数
+        $process_final_num = 0; //操作完成数
+      $fcc->query("select count(items_id) as t from x_project_develop_items where develop_id = $develop_id and status = 1");
+      if($fcc->next_record()){
+        $items_final_num = $fcc->f('t');
+      }
+
+      $fcc->query("select count(develop_id) as t from x_project_develop_process where develop_id = $develop_id");
+      if($fcc->next_record()){
+        $process_final_num = $fcc->f('t');
+      }
+
+
+
+      //当前开发协助是否都完成
+      $is_final_array = array();
+      $all_other_uuid_array = array();
+      $i = 0;
+      $fcc->query("select is_final,other_uuid from x_project_develop_otherwork where develop_id = $develop_id");
+      while($fcc->next_record()){
+        $is_final_array[$fcc->f('other_uuid')] = $fcc->f('is_final');
+        $all_other_uuid_array[$i] = $fcc->f('other_uuid');
+        $i++;
+      }
+
+        //当前测试是否完成
+        $fcc->query("SELECT header_id from x_project_develop where  develop_id = $develop_id");
+        if($fcc->next_record()){
+          $header_id_array = explode(',',$fcc->f('header_id')); //将所有的header_id存入数组中
+        }
+
+
+        $header_no_final_num = array(); //每个测试中未完成的个数
+        $test_info = array(); //每个测试的信息详情
+        if($header_id_array[0]){
+          //判断各个header中是否存在未完成的测试
+          for($i = 0;$i < count($header_id_array);$i++){
+            $fcc->query("SELECT header_id,test_status,t_uuid from x_project_test_unit where  header_id = $header_id_array[$i]");
+            while($fcc->next_record()){
+              if($header_no_final_num[$i] == ""){
+                $header_no_final_num[$i] = 0;
+              }
+              if($fcc->f('test_status') != 3 && $fcc->f('test_status') != 4){
+                $header_no_final_num[$i]++;
+              }
+              $test_info[$i] .= $UserNameArr{$fcc->f('t_uuid')}."&nbsp;&nbsp;&nbsp;".$_TestStatus{$fcc->f('test_status')}."\n";
+            }
+            if(!$header_no_final_num[$i]){
+              $test_status[$i] = '<span class="colorGreen">已完成</span>';
+            }else{
+              $test_status[$i] = '<span class="colorBlue">测试中</span>';
+            }
+          }
+        }
+
+        $fcc->query("select count(process_id) as t from x_project_develop_process where develop_id = $develop_id and submit_uuid = $_tplThisUuid ");
+        if($fcc->next_record()){
+          $my_process_num = $fcc->f('t');
+        }
+
+
+        $no_final_items_num = 0;//没有完成分解工作的数量
+        $fcc->query("select count(items_id) as t from x_project_develop_items where develop_id = $develop_id and status = 0");
+        if($fcc->next_record()){
+          $no_final_items_num =  $fcc->f('t');
+        }
+
+
+       //基本信息
+        $fcc->query("SELECT * from x_project_develop where  develop_id = '$develop_id'");
+        if($fcc->next_record()){
+            $develop_status = $fcc->f('status');
+            //状态，预计完成时间和紧急程度
+      if($fcc->f('status') == 1){
+        $_tplstatus =$develop_Status{$fcc->f('status')};
+        $_tplurgent = $_xProjectUrgent{$fcc->f('urgent')};
+        $_tplexpect_time = $fcc->f('expect_time');
+      }else if($fcc->f('status') == 2){
+        $_tplstatus = '<span class="colorBlue">'.$develop_Status{$fcc->f('status')}.'</span>';
+        $_tplurgent = '<span class="colorBlue">'.$_xProjectUrgent{$fcc->f('urgent')}.'</span>';
+        $_tplexpect_time = '<span class="colorBlue">'.$fcc->f('expect_time').'</span>';
+      }else if($fcc->f('status') == 7){
+        $_tplstatus = '<span class="colorGreen">'.$develop_Status{$fcc->f('status')}.'</span>';
+        $_tplurgent = '<span class="colorGreen">'.$_xProjectUrgent{$fcc->f('urgent')}.'</span>';
+        $_tplexpect_time = '<span class="colorGreen">'.$fcc->f('expect_time').'</span>';
+      }else if($fcc->f('status') == 14 ){
+        $_tplstatus = '<span class="colorGrey">'.$develop_Status{$fcc->f('status')}.'</span>';
+        $_tplurgent = '<span class="colorGrey">'.$_xProjectUrgent{$fcc->f('urgent')}.'</span>';
+        $_tplexpect_time = '<span class="colorGrey">'.$fcc->f('expect_time').'</span>';
+      }else if( $fcc->f('status') == 15){
+        $_tplstatus = '<span class="colorGrey">'.$fcc->f('close_reason').'</span>';
+        $_tplurgent = '<span class="colorGrey">'.$_xProjectUrgent{$fcc->f('urgent')}.'</span>';
+        $_tplexpect_time = '<span class="colorGrey">'.$fcc->f('expect_time').'</span>';
+      }else if($fcc->f('status') == 8){
+        $_tplstatus = '<span class="colorRed">'.$develop_Status{$fcc->f('status')}.'</span>';
+        $_tplurgent = '<span class="colorRed">'.$_xProjectUrgent{$fcc->f('urgent')}.'</span>';
+        $_tplexpect_time = '<span class="colorRed">'.$fcc->f('expect_time').'</span>';
+      }else if($fcc->f('status') >= 3 && $fcc->f('status') <= 6){
+        $_tplstatus = '<span class="colorGreen">'.$develop_Status{$fcc->f('status')}.'</span>';
+        $_tplurgent = '<span class="colorGreen">'.$_xProjectUrgent{$fcc->f('urgent')}.'</span>';
+        $_tplexpect_time = '<span class="colorGreen">'.$fcc->f('expect_time').'</span>';
+      }else {
+        $_tplstatus = '<span class="colorOrange">'.$develop_Status{$fcc->f('status')}.'</span>';
+        $_tplurgent = '<span class="colorOrange">'.$_xProjectUrgent{$fcc->f('urgent')}.'</span>';
+        $_tplexpect_time = '<span class="colorOrange">'.$fcc->f('expect_time').'</span>';
+      }
+
+
+            $_tplfunction_theme = $fcc->f('function_theme'); //功能名称
+            if($fcc->f('workload') == ''){
+              $_tplworkload = '暂未明确';
+            }else{
+              $_tplworkload = $fcc->f('workload');
+            }
+            $old_workload = $fcc->f('workload');
+            $_tplremarks = html_entity_decode(htmlspecialchars_decode(str_replace("\n","<br>",$fcc->f('remarks'))));  //功能描述
+            $old_remarks = $fcc->f('remarks');
+            $old_expect_time = $fcc->f('expect_time');
+            $header_id = $fcc->f('header_id');
+
+            if(!$header_id_array[0]){
+              $_tpltestlink = '暂无相关测试';
+            }else{
+              $_tpltestlink ='<a href="/?_mod=ngproject&_func=test&_act=info&header_id='.$header_id_array[count($header_id_array)-1].'&project_id='.$fcc->f('project_id').'&develop_id='.$fcc->f('develop_id').'" style="color:#00b7ee">点此查看</a>  &nbsp;&nbsp;测试状态：'.$test_status[count($header_id_array)-1].'&nbsp;&nbsp;<i class="glyphicon glyphicon-eye-open" title="'.$test_info[count($header_id_array)-1].'"></i>';
+            }
+
+            if(count($header_id_array) > 1){
+              $more_btn = '&nbsp;&nbsp;&nbsp;<i class="glyphicon glyphicon-chevron-down more_btn" id="show_other_btn"></i>';
+            }else{
+              $more_btn = '';
+            }
+
+            //其他测试信息
+            for($i = count($header_id_array) - 2;$i >= 0;$i--){
+              $other_test_main .= '<div class="form-group">
+                <label class="col-sm-8 col-xs-8 control-label"></label>
+                <div class="col-sm-4 col-xs-4 form-control-static">
+                  <div><a href="/?_mod=ngproject&_func=test&_act=info&header_id='.$header_id_array[$i].'&project_id='.$fcc->f('project_id').'&develop_id='.$fcc->f('develop_id').'" style="color:#00b7ee">点此查看</a>  &nbsp;&nbsp;测试状态：'.$test_status[$i].'&nbsp;&nbsp;<i class="glyphicon glyphicon-eye-open" title="'.$test_info[$i].'"></i></div>
+                </div>
+              </div>';
+            }
+
+            $_tplchargeList = $UserNameArr{$fcc->f('charge_uuid')};  //主要负责人
+            $charge_uuid = $fcc->f('charge_uuid');
+            if($fcc->f('all_aux_user') == ''){
+                $_tplall_aux_user = '无';  //其他参与人员
+            }else{
+              $_tplaux_user = explode(',',$fcc->f('all_aux_user'));    //其他参与人员
+              for($i = 0;$i < count($_tplaux_user);$i++){
+                $_tplall_aux_user .= $UserNameArr{$_tplaux_user[$i]}.'&nbsp;&nbsp;';
+              }
+            }
+            for($i = 0;$i < $fcc->f('important');$i++){
+              $_tplimportant .= '★&nbsp;';  //重要程度
+            }
+
+
+            if($fcc->f('final_time') == ''){
+              $_tplfinal_time = '— — — —';  //实际完成时间
+            }else{
+              $_tplfinal_time = $fcc->f('final_time');  //实际完成时间
+            }
+              $_tplfile =  $_tplLinkLists{$develop_id};  //文件
+
+              $task_rate =  $fcc->f('task_rate'); //没有分解工作的进度
+
+              $_confirm_btn = '';
+              $_edit_status = '';
+              $_edit_time = '';
+              $_close_problem = '';
+              $_tplProcessCreat = '';
+
+
+            //审批按钮
+
+            if($_tplThisUuid == 51 && $fcc->f('status') >= 9 && $fcc->f('status') <= 13){
+              $_confirm_btn = '<button class="btn btn-xs btn-warning confirm_btn" data-toggle="modal" data-target="#confirm_Modal"><i class="icon-pencil"></i>审批</button>&nbsp;';
+            }
+
+//          if($fcc->f('status') == 1 || $fcc->f('status') == 2 || $fcc->f('status') == 8) {
+            $_tpleditcharge = '<button class="btn btn-primary btn-xs " style="color: white;margin-left: 10px" data-toggle="modal" data-target="#edit_charge_Modal"><i class="icon-pencil"></i>重新指定</button>';
+//          }
+
+            //判断当前账号是否为负责人
+            if($fcc->f('charge_uuid') == $_tplThisUuid || $_tplThisUuid == 114){
+              //撤回审批按钮
+              if($fcc->f('status') >= 9 && $fcc->f('status') <= 13){
+                $delete_confirm_btn = '<button class="btn btn-xs btn-warning " data-toggle="modal" data-target="#delete_confirm_Modal"><i class="icon-pencil"></i>撤回审批</button>&nbsp;&nbsp;';
+              }
+
+              $header_id = $fcc->f('header_id');
+
+              //修改预计完成时间&关闭该功能
+              if($fcc->f('status') == 1 || $fcc->f('status') == 2 || $fcc->f('status') == 8){
+                $_edit_time = '<button class="btn btn-xs btn-primary editime" data-toggle="modal" data-target="#edit_time_Modal" onclick="show_expect(\''.$fcc->f('expect_time').'\')"><i class="icon-pencil"></i>更改预计完成时间</button>&nbsp;';
+                $_edit_status = '<button class="btn btn-xs btn-danger" data-toggle="modal" data-target="#edit_status_Modal" ><i class="icon-pencil"></i>状态更新</button>&nbsp;';
+                $_tpleditimportant = '<button class="btn btn-primary btn-xs " style="color: white;margin-left: 10px" data-toggle="modal" data-target="#edit_important_Modal" onclick="show_important('.$fcc->f('important').')"><i class="icon-pencil"></i>重设</button>';
+                $_tplediturgent = '<button class="btn btn-primary btn-xs " style="color: white;margin-left: 10px" data-toggle="modal" data-target="#edit_urgent_Modal" onclick="show_urgent('.$fcc->f('urgent').')"><i class="icon-pencil"></i>重设</button>';
+                $_tplchange_all_aux_user_btn = '<button class="btn btn-primary btn-xs " style="color: white;margin-left: 10px" data-toggle="modal" data-target="#edit_all_aux_user_Modal" ><i class="icon-pencil"></i>修改</button>';
+                $_tplchange_info = '<button class="btn btn-xs btn-warning" onclick=window.location.href="/?_mod=ngproject&_func=develop&_act=edit&project_id='.$project_id.'&develop_id='.$develop_id.'"><i class="icon-pencil"></i>修改基本信息</button>&nbsp;';
+                $_tplAddItemBtn =  '<button class="btn btn-xs btn-info add_items_btn"><i class="icon-plus"></i> 新增分解工作项</button>&nbsp;&nbsp;';
+              }
+              if($fcc->f('status') == 2 ){
+                $_tpladdtestbtn = '<a href="/?_mod=ngproject&_func=test&_act=add&project_id='.$project_id.'&develop_id='.$develop_id.'"><button class="btn btn-success btn-xs" style="color: white;margin-left: 10px"></i>添加测试</button></a> ';
+              }
+
+              if($fcc->f('status') == 8 ){
+                if($items_final_num != 0 ||  $process_final_num != 0 ){
+                  $_tpladdtestbtn = '<a href="/?_mod=ngproject&_func=test&_act=add&project_id='.$project_id.'&develop_id='.$develop_id.'"><button class="btn btn-success btn-xs" style="color: white;margin-left: 10px"></i>添加测试</button></a> ';
+                }
+              }
+
+
+            }
+            $all_aux_user = explode(',',$fcc->f('all_aux_user'));
+            if($fcc->f('charge_uuid') == $_tplThisUuid ){
+                if($fcc->f('status') == 1 || $fcc->f('status') == 2 || $fcc->f('status') == 8){
+                  $_tplProcessCreat = '<button class="btn btn-primary new_tTask_process btn-xs" style="color: white;margin-left: 10px" data_type="add_process_info"><i class="icon-plus"></i>工作详情记录</button>&nbsp;';
+                }
+            }
+
+          if( in_array($_tplThisUuid,$all_aux_user)){
+            if($fcc->f('status') == 1 || $fcc->f('status') == 2 || $fcc->f('status') == 8) {
+              $_tplProcessCreat = '<button class="btn btn-primary new_tTask_process btn-xs" style="color: white;margin-left: 10px"  data_type="add_process_info"><i class="icon-plus"></i>工作详情记录</button>&nbsp;';
+            }
+          }
+        }
+
+
+          //选择负责人
+          $_tplUserList = array();
+          $fcc->query("SELECT b.uid,b.cn_name,b.en_name from x_project_user a
+          left join common_user_profile b on a.uuid=b.uid
+          where  project_id= '$project_id'");
+          while ($fcc->next_record()) {
+              $_tplUserList[$fcc->f('uid')]=$fcc->f('en_name')?$fcc->f('en_name'):$fcc->f('cn_name');
+          }
+          $_tplTestUserOption = '';
+          foreach ($_tplUserList as $key => $value) {
+            $_tplTestUserOption .= '<option value="'.$key.'">'.$value.'</option>';
+            if( !in_array($key,$all_other_uuid_array) ){
+              $_tplJoinUserOption .= '<option value="'.$key.'">'.$value.'</option>';
+            }
+          }
+
+
+        //其他参与人员工作明细
+        $fcc->query("select * from x_project_develop_otherwork where develop_id = $develop_id");
+        $i = 1;
+        while($fcc->next_record()){
+          $join_btn = '';
+          if($fcc->f('is_final') == 0){
+            $other_status ='<span class="colorRed">未完成</span>';
+            if($all_aux_user_num != count($_tplProjectEngArr) && $_tplThisUuid == $charge_uuid){
+              $join_btn = '<button class="btn btn-default btn-xs" data-toggle="modal" data-target="#join_Modal" onclick="join_info('.$fcc->f('otherwork_id').',\''.$fcc->f('work_content').'\')"><i class="glyphicon glyphicon-retweet"></i>&nbsp;交接</button>&nbsp;';
+            }
+          }else if($fcc->f('is_final') == 1){
+            $other_status = '<span class="colorGreen">已完成</span>';
+          }else if($fcc->f('is_final') == 2){
+            $other_status = '<span class="colorGrey">已移交</span>';
+          }
+
+          //参与人员协助完成
+          if( in_array($_tplThisUuid,$all_aux_user) && $is_final_array[$_tplThisUuid] == 0 && $fcc->f('other_uuid') == $_tplThisUuid){
+            $final_btn = '<button class="btn btn-xs btn-primary editProject" data-toggle="modal" data-target="#final_Modal"><i class="icon-pencil"></i>完成</button>&nbsp;';
+          }else{
+            $final_btn = '';
+          }
+
+
+          $other_work_main .= '<tr>
+            <td>'.$i.'</td>
+            <td >'.$UserNameArr{$fcc->f('other_uuid')}.'</td>
+            <td>'.$fcc->f('work_content').'</td>
+            <td>'.$other_status.' </td>
+            <td>'.$join_btn.$final_btn.'</td>
+          </tr>';
+          $i++;
+        }
+
+        if($i == 1){
+        $other_work_main = '<tr><td>暂无参与人员</td><td ></td><td></td><td> </td><td></td></tr>';
+        }
+
+      //查询当前项目分解共有几项
+      $fcc->query("select count(items_id) as t from x_project_develop_items where develop_id = $develop_id");
+      if($fcc->next_record()){
+        $items_num = $fcc->f('t');
+      }
+
+
+    //分解功能显示
+    $fcc->query("select * from x_project_develop_items where develop_id = $develop_id order by expect_time ");
+    $i = 0;
+    $all_work_num = 0;//总的工作量
+    $final_work_num = 0;//完成的工作量
+    while($fcc->next_record()){
+      $i++;
+
+      if($fcc->f('final_time')){
+        $final_time = date('Y-m-d',$fcc->f('final_time'));
+      }else{
+        $final_time = $fcc->f('expect_time');
+      }
+
+
+      $all_work_num = $all_work_num + $fcc->f('weight');
+      if($fcc->f('status') == 0){
+        $items_status  = '<span class="colorRed">未完成</span>';
+      }else if($fcc->f('status') == 1){
+        $items_status  = '<span class="colorGreen">已完成</span>(完成时间：'.$final_time.')';
+        $final_work_num = $final_work_num + $fcc->f('weight');
+      }
+
+      if($fcc->f('work_uuid')){
+        $work_uuid = $fcc->f('work_uuid');
+      }else{
+        $work_uuid = $charge_uuid;
+      }
+
+      $items_main .=  '<tr>
+        <td>'.$i.'</td>
+        <td >'.$fcc->f('items_name').'</td>
+        <td >'.$UserNameArr{$work_uuid}.'</td>
+        <td>'.$_xProjectImportant{$fcc->f('important')}.'</td>
+        <td>'.$_xProjectUrgent{$fcc->f('urgent')}.'</td>
+        <td>'.$fcc->f('expect_time').'</td>
+        <td>'.$fcc->f('progress').'%</td>
+        <td>'.$fcc->f('weight').'</td>
+        <td>'.$items_status.' </td><td>';
+          if( $fcc->f('status') == 0 &&  ($work_uuid == $_tplThisUuid || $_tplThisUuid == 114)){
+            if($develop_status == 1 || $develop_status == 2 || $develop_status == 8 ){
+              if($fcc->f('header_id')){
+                $items_main .= '<button class="btn btn-xs btn-success editProject final_items_btn" data-toggle="modal" data-target="#items_final_Modal" onclick="add_items('.$fcc->f('items_id').',\''.$fcc->f('expect_time').'\',1)"><i class="	glyphicon glyphicon-ok"></i>&nbsp;完成</button>';
+              }else{
+                  $items_main .= '<button class="btn btn-xs btn-success editProject final_items_btn" data-toggle="modal" data-target="#items_final_Modal" onclick="add_items('.$fcc->f('items_id').',\''.$fcc->f('expect_time').'\',0)"><i class="	glyphicon glyphicon-ok"></i>&nbsp;完成</button>';
+                  $items_main .= '&nbsp;&nbsp;<a href="/?_mod=ngproject&_func=test&_act=add&project_id='.$project_id.'&items_id='.$fcc->f('items_id').'"><button class="btn btn-xs btn-info  editProject itema_edit_btn"  ><i class="icon-plus"></i>&nbsp;添加相关测试</button></a>';
+                }
+            }
+          }
+
+          if($work_uuid == $_tplThisUuid && $fcc->f('header_id') == ''){
+            $items_main .= '&nbsp;&nbsp;<button class="btn btn-xs btn-info" data-toggle="modal" data-target="#relate_test_Modal" onclick="add_items_id('.$fcc->f('items_id').')"><i class="icon-plus"></i>&nbsp;关联已有测试</button>';
+          }
+
+          if($fcc->f('status') == 0 &&  ($work_uuid == $_tplThisUuid || $charge_uuid == $_tplThisUuid  || 114 == $_tplThisUuid)){
+            $items_main .= '&nbsp;&nbsp;<a href="/?_mod=ngproject&_func=develop&_act=edit&project_id='.$project_id.'&develop_id='.$develop_id.'&items_id='.$fcc->f('items_id').'"><button class="btn btn-xs btn-primary  editProject itema_edit_btn"  ><i class="icon-pencil"></i>&nbsp;修改</button></a> ';
+          }
+
+          if($fcc->f('header_id')){
+             $items_main .= '&nbsp;&nbsp;<a href="/?_mod=ngproject&_func=test&_act=info&header_id='.$fcc->f('header_id').'&project_id='.$project_id.'"><button class="btn btn-xs btn-OrangeYellow  editProject itema_edit_btn"  ><i class="glyphicon glyphicon-send"></i>&nbsp;跳转相关测试</button></a>';
+          }
+        $items_main .='</td></tr>';
+    }
+
+
+    if($i == 0){
+      $items_main = '<tr><td>当前开发项暂无分解工作</td><td></td><td></td><td></td><td></td><td></td></tr>';
+    }
+
+
+    //计算完成进度
+    if($final_work_num != 0){                                             //R
+      $final_rate = round(($final_work_num/$all_work_num) * 100,0);
+      if($develop_status == 8 && $final_rate == 100){
+        $final_rate = '99%';
+      }else if($develop_status == 2 && $final_rate == 100){
+        $final_rate = '99%';
+      }else{
+        $final_rate = $final_rate.'%';
+      }
+    }else{
+      if($develop_status >= 3 && $develop_status <= 7){
+        $final_rate = '100%';
+      }else if($develop_status == 2){
+        $final_rate = '1%';
+      }else if($process_final_num != 0){
+        $final_rate = '1%';
+      }else{
+        $final_rate = '0%';
+      }
+    }
+
+
+
+          //日志信息
+          $fcc->query("select * from x_project_develop_news where develop_id = $develop_id order by operate_time desc");
+          $i = 0;
+          while($fcc->next_record()){
+            $i++;
+            $_tplnews .= '<tr>
+            <td>'.$i.'</td>
+            <td>'.$UserNameArr{$fcc->f('operate_uuid')}.'</td>
+            <td   class="col-sm-4">'.str_replace("\n","<br>",$fcc->f('remarks')).'</td>
+            <td>'.date('Y-m-d H:i',$fcc->f('operate_time')).' </td>
+          </tr>';
+          }
+
+          if($i == 0){
+            $_tplnews = '<tr ><td>当前无开发日志</td><td class="col-sm-4"></td><td></td><td></td></tr>';
+          }
+
+
+          //审批内容
+          $fcc->query("select remarks from x_project_develop_news where develop_id = $develop_id
+          order by operate_time desc
+          LIMIT 1");
+          if($fcc->next_record()){
+            $_tplconfirm_info = $fcc->f('remarks');
+          }
+
+
+
+        //多选下拉列表
+        $_userMessage = array();
+        $fcc->query("SELECT b.uid,b.en_name,b.cn_name
+        FROM x_project_user a LEFT JOIN  common_user_profile b on a.uuid = b.uid
+        where project_id = $project_id  and type ='0'");
+        while($fcc->next_record()){
+          $en_name = $fcc->f('en_name');
+          $cn_name = $fcc->f('cn_name');
+          $uid = $fcc->f('uid');
+          if($charge_uuid != $uid){
+            if($en_name == ''){
+              $_userMessage[$uid] = $cn_name;
+            }else{
+              $_userMessage[$uid] = $en_name;
+            }
+          }
+        }
+
+
+        // 用户id
+        $_tpluuidArr = array();
+        // 默认是否选中
+        $_tplcheckArr = array();
+        foreach ($_userMessage as $k => $v) {
+          array_push($_tpluuidArr,$k);
+        }
+
+
+        // $_tplcheckArrs = '['.implode($_tplcheckArr, ',').']';
+        $_tpluuidArrs = '['.implode($_tpluuidArr, ',').']';
+
+
+
+        // 用户名
+        $_tpluuidnamesArr = '';
+        foreach ($_userMessage as $k => $v) {
+          $_tpluuidnamesArr .= '"'.$v.'"'.',';
+        }
+
+        $_tpluuidnamesArrs = '['.rtrim($_tpluuidnamesArr,',').']';
+
+        $nameArr = array();
+        foreach($_userMessage as $k => $v){
+          array_push($nameArr,$v);
+        }
+        $_tpluuidStr = implode(',',$_tpluuidArr);
+        $_tplnameStr = implode(',',$nameArr);
+
+
+        //验收跳转按钮
+        if($develop_status == 3 || $develop_status == 4){
+          $fcc->query("select interior_acceptance_id from x_project_interior_acceptance where develop_id like '%$develop_id%' ");
+          if($fcc->next_record()){
+            $transfer_btn = '<a href="/?_mod=ngproject&_func=acceptance&_act=interior_info&project_id='.$project_id.'&interior_acceptance_id='.$fcc->f('interior_acceptance_id').'"><button class="btn btn-BlueGreen btn-xs"><i class="glyphicon glyphicon-send"></i>&nbsp;跳转当前验收详情</button></a> &nbsp;';
+          }
+        }
+
+
+        if($develop_status == 5 || $develop_status == 6 ){
+          $fcc->query("select a.custom_acceptance_id from x_project_custom_acceptance a
+          RIGHT JOIN x_project_interior_acceptance b
+          on  a.interior_acceptance_id = b.interior_acceptance_id
+          where b.develop_id = $develop_id");
+          if($fcc->next_record()){
+            $transfer_btn = '<a href="/?_mod=ngproject&_func=acceptance&_act=custom_info&project_id='.$project_id.'&custom_acceptance_id='.$fcc->f('custom_acceptance_id').'"><button class="btn btn-BlueGreen btn-xs"><i class="glyphicon glyphicon-send"></i>&nbsp;跳转当前验收详情</button></a> &nbsp;';
+          }
+        }
+
+        $fcc->query("select project_admin from x_project_info where project_id = $project_id");
+        if($fcc->next_record()){
+          //项目经理有撤销按钮
+          if($develop_status == 14 || $develop_status == 15){
+            if($fcc->f('project_admin') == $_tplThisUuid){
+              $recall_btn = '<button class="btn btn-xs btn-danger" data-toggle="modal" data-target="#recall_Modal">撤销当前状态</button>&nbsp;';
+            }
+          }
+        }
+
+
+//没有预计完成时间的算最终时间
+/*
+$expect_time_array = array();
+$develop_id_array = array();
+$i = 0;
+$fcc->query("select * from x_project_develop ");
+while($fcc->next_record()){
+  $expect_time_array[$fcc->f('develop_id')] = $fcc->f('expect_time');
+  $develop_id_array[$i] = $fcc->f('develop_id');
+  $i++;
+}
+
+for($i = 0;$i < count($develop_id_array); $i++){
+  $expect_time = $expect_time_array[$develop_id_array[$i]];
+  $fieldArr = array('expect_time');
+  $updateStr = $mcc->buildSqlUpdateStr($fieldArr);
+  $fcc->query("UPDATE x_project_develop_items SET $updateStr WHERE develop_id = '$develop_id_array[$i]'");
+}
+*/
+
+    //当天的时间
+    $_tplToday = date('Y-m-d',time());
+
+    //分解工作项打印
+    $_tplAddIteminfo = '';
+    for($i = 0;$i < 5;$i++){
+    $_tplAddIteminfo .= ' <tr> <td><input type="text" placeholder="工作项名称" class="form-control items_name_array" name="items_name_array[]"></td>
+      <td> <select name="work_uuid_array[]"  class="select form-control work_uuid_array">
+        '.$_tplTestUserOption.'
+      </select></td>
+      <td>  <select name="important_array[]"  class="select form-control important_array">
+        <option value="1">★</option>
+        <option value="2">★ ★</option>
+        <option value="3" selected>★ ★ ★</option>
+        <option value="4">★ ★ ★ ★</option>
+        <option value="5">★ ★ ★ ★ ★</option>
+      </select></td>
+      <td>  <select name="urgent_array[]"  class="select form-control urgent_array">
+        <option value="1">L-</option>
+        <option value="2">L</option>
+        <option value="3">L+</option>
+        <option value="4">M-</option>
+        <option value="5" selected>M</option>
+        <option value="6">M+</option>
+        <option value="7">H-</option>
+        <option value="8">H</option>
+        <option value="9">H+</option>
+      </select></td>
+      <td><input type="text" placeholder="预计完成时间" class="form-control dateP "  autocomplete="off"  name="expect_time_array[]" ></td>
+      <td><input type="text" placeholder="工作量" class="form-control" name="weight_array[]"></td></tr>';
+    }
+
+
+
+      //查询是否存在关联服务记录
+      $i= 1;
+      $fcc->query("select develop_id,education_id,start_time,type from x_project_education where project_id = $project_id order by start_time desc");
+      while($fcc->next_record()){
+        $education_develop_id_array = explode(',',$fcc->f('develop_id'));
+        if(in_array($develop_id,$education_develop_id_array)){
+          if($fcc->f('type') == 1){
+            $type = '培训';
+          }else if($fcc->f('type') == 2){
+            $type = '服务';
+          }
+          $education_content .= '<li><a href="/?_mod=ngproject&_func=education&_act=info&project_id='.$project_id.'&education_id='.$fcc->f('education_id').'">'.date('Y-m-d',$fcc->f('start_time')).$type.'记录</a></li>';
+          $i++;
+        }
+      }
+
+      //生成跳转按钮
+      if($education_content){
+      $_tplTransEducationBtn = '
+      <div class="btn-group">
+        <button type="button" class="btn btn-BlueGreen dropdown-toggle btn-xs" data-toggle="dropdown"><i class="glyphicon glyphicon-send"></i>&nbsp;&nbsp;跳转关联服务/培训记录
+          <span class="caret"></span>
+          <span class="sr-only">切换下拉菜单</span>
+        </button>
+        <ul class="dropdown-menu" role="menu">
+          '.$education_content.'
+        </ul>
+      </div>&nbsp;&nbsp;';
+    }
+
+
+
+$button = '<button  data-id="'.$fcc->f('id').'"  data-as="'.md5($fcc->f('auth_str')).'"  name="_commonDocPreviewBTN" class="btn btn-xs btn-primary operate_btn"><i class="icon-film"></i>&nbsp;预览</button>';
+
+
+      //查询已经被关联的测试
+      $headerIdStr = '-1';
+      $i = 0;
+      $fcc->query("select header_id from x_project_develop_items where project_id = $project_id and header_id != ''");
+      while($fcc->next_record()){
+        if($i == 0){
+          $headerIdStr = $fcc->f('header_id');
+        }else{
+          $headerIdStr .= ','.$fcc->f('header_id');
+        }
+        $i++;
+      }
+
+        $_tplHeadTitle = '';
+        $fcc->query("select * from x_project_test_header where project_id = $project_id ");
+        while($fcc->next_record()){
+          $_tplHeadTitle  .= '<option value="'.$fcc->f('header_id').'">'.$fcc->f('test_theme').'</option>';;
+        }
+
+
+
+
+        //批量添加服务
+        $dateArr = array('2021-04-07','2021-04-14','2021-04-21','2021-04-28','2021-05-12','2021-05-19','2021-05-26','2021-06-02','2021-06-09','2021-06-16','2021-06-23','2021-06-30','2021-07-07','2021-07-14','2021-07-21','2021-07-28','2021-08-04','2021-08-11','2021-08-18','2021-08-25','2021-09-01','2021-09-08','2021-09-15','2021-09-22','2021-09-29','2021-10-13','2021-10-20','2021-10-27','2021-11-03','2021-11-11','2021-11-03','2021-11-17','2021-11-24','2021-12-01','2021-12-08','2021-12-15','2021-12-22','2021-12-29','2022-01-05','2022-01-12','2022-01-19','2022-01-26','2022-02-10','2022-02-16','2022-02-23','2022-03-02','2022-08-24','2022-08-31','2022-09-07','2022-09-14','2022-09-22','2022-09-28');
+        if($_tplThisUuid == 103){
+          $project_id = 212;
+          $service_way = 1;
+          $service_object = '指挥部各部门';
+          $service_object_type = 1;
+          $service_content = 'cpm平台定期现场技术支持和巡检';
+          $charge_uuid = 88;
+          $status = 1;
+          $service_type = 1;
+          $length_time = 172800;
+
+          foreach ($dateArr as $k => $v) {
+            $service_time = $v;
+            // $fcc->query("INSERT INTO x_project_education_item (project_id,service_object,service_content,charge_uuid,service_time,status,service_way,service_type,length_time) VALUES ('$project_id','$service_object','$service_content','$charge_uuid','$service_time','$status','$service_way','$service_type','$length_time')");
+          }
+       }
+
+
+        $mcc->loadJs('jquery.form.min.js');
+        $mcc->loadCss('jquery-ui-timepicker-addon.min.css');
+        $mcc->loadJs('jquery-ui-timepicker-addon.min.js');
+        $mcc->loadJs('summernote.min.js');
+        $mcc->loadJs('summernote-zh-CN.js');
+        $mcc->loadCss('main.css');
+        $mcc->loadCss('summernote.css');
+        $mcc->printPage();
