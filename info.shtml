@@ -2693,7 +2693,7 @@ if($confirm_num == 5 ){
         $items_num = $fcc->f('t');
       }
 
-      $fcc->query("update x_project_develop_items set progress = 100 where status = 1");        //R
+      $fcc->query("update x_project_develop_items set progress = 100 where status = 1");        //R 如果设置项目完成，则进度直接置为100%
     //分解功能显示
     $fcc->query("select * from x_project_develop_items where develop_id = $develop_id order by expect_time ");
     $i = 0;
@@ -2712,10 +2712,10 @@ if($confirm_num == 5 ){
       $all_work_num = $all_work_num + $fcc->f('weight');
       if($fcc->f('status') == 0){
         $items_status  = '<span class="colorRed">未完成</span>';
+        $final_work_num  += $fcc->f('weight') * $fcc->f('progress') / 100;     //R
+
       }else if($fcc->f('status') == 1){
         $items_status  = '<span class="colorGreen">已完成</span>(完成时间：'.$final_time.')';
-
-        
 
         $final_work_num = $final_work_num + $fcc->f('weight');
       }
